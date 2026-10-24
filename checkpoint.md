@@ -1,9 +1,10 @@
 # Checkpoint
 
 ## Task 8 — Publish GitHub repository and usage guide (2026-10-24)
-- Status: in progress.
+- Status: complete.
 - Scope: create private GitHub repository Model-eval-on-comp-dataset and Vietnamese README covering APK build, installation, QDC SSH setup, dataset processing and results retrieval.
 - Preparation: no existing Git repository or GitHub CLI; use authenticated browser to create the repository and existing Git credentials for push if available. Exclude keys, outputs, downloaded assets and local machine configuration.
+- Result: created `https://github.com/hoangducbao/Model-eval-on-comp-dataset` as a private repository and pushed initial source commit `3de5626`. README documents Windows build, debug APK installation, secure per-session PEM handling, QDC SSH tunnel on local port 5038, ADB operations, app behavior, result ZIP export, `adb pull`, direct recovery path and expected error handling. Git ignores private keys, keystores, APKs, downloaded/build output and local Android configuration.
 
 ## Task 7 — Investigate translation latency and refine run controls (2026-10-24)
 - Status: complete.
