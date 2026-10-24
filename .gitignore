@@ -1,0 +1,13 @@
+android/.gradle/
+android/**/build/
+android/local.properties
+work/
+outputs/
+*.pem
+*.key
+*.keystore
+*.jks
+.idea/
+**/.idea/
+*.apk
+*.log

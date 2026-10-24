@@ -1,0 +1,70 @@
+plugins {
+    id 'com.android.application'
+}
+
+def qwenModelBase = providers.gradleProperty('qwenModelBase')
+        .orElse('https://github.com/DS-PNQ/OnSpeak47-npu-models/releases/download/v2.2.0-npu/').get()
+def hyMtModelBase = providers.gradleProperty('hyMtModelBase')
+        .orElse('https://github.com/DS-PNQ/OnSpeak47-npu-models/releases/download/v2.1.0-npu/').get()
+
+android {
+    namespace 'com.larplarpsahur'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.larplarpsahur'
+        minSdk 27
+        targetSdk 34
+        versionCode 4
+        versionName '1.0.3'
+
+        buildConfigField 'String', 'QWEN_MODEL_BASE', '"' + qwenModelBase + '"'
+        buildConfigField 'String', 'HYMT_MODEL_BASE', '"' + hyMtModelBase + '"'
+        buildConfigField 'String', 'TOKENIZER_URL', '"' + providers.gradleProperty('tokenizerUrl').orElse('https://huggingface.co/tencent/Hy-MT2-1.8B/resolve/9a341cd1b679d3efd23b46e847b01745a71ed792/tokenizer.json').get() + '"'
+        buildConfigField 'String', 'TOKENIZER_SHA256', '"b475bbef1b0b2fd57dcb865332b546475bd1ede2deb3bb91bafd0c047a8a530a"'
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    buildTypes {
+        debug {
+            minifyEnabled false
+        }
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+            excludes += ['**/libQnnHtpPrepare.so', '**/libQnnGpu.so', '**/libQnnDsp*.so',
+                         '**/libQnnHtpV6*', '**/libQnnHtpV73*']
+        }
+    }
+}
+
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'androidx.activity:activity:1.9.3'
+    implementation 'androidx.core:core-ktx:1.13.1'
+    implementation 'com.google.android.material:material:1.12.0'
+
+    implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.29.0'
+    implementation 'com.microsoft.onnxruntime:onnxruntime-extensions-android:0.13.0'
+    implementation 'com.qualcomm.qti:onnxruntime-android-qnn:2.7.0'
+    implementation 'com.qualcomm.qti:qnn-runtime:2.51.0'
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.json:json:20240303'
+    testImplementation 'net.sf.kxml:kxml2:2.3.0'
+}

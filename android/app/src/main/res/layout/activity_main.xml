@@ -1,0 +1,314 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/app_background"
+    android:clipToPadding="false"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingStart="20dp"
+        android:paddingTop="20dp"
+        android:paddingEnd="20dp"
+        android:paddingBottom="28dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="larplarpsahur"
+            android:textColor="@color/text_primary"
+            android:textSize="27sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:layout_marginBottom="16dp"
+            android:text="ASR tự nhận diện · Dịch audio"
+            android:textColor="@color/text_muted"
+            android:textSize="14sp" />
+
+        <com.google.android.material.card.MaterialCardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            app:cardBackgroundColor="@color/surface"
+            app:cardCornerRadius="22dp"
+            app:cardElevation="0dp"
+            app:strokeColor="@color/stroke"
+            app:strokeWidth="1dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingStart="16dp"
+                android:paddingTop="8dp"
+                android:paddingEnd="8dp"
+                android:paddingBottom="8dp">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Nguồn: tự động"
+                    android:textColor="@color/text_primary"
+                    android:textSize="15sp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="8dp"
+                    android:text="→"
+                    android:textColor="@color/text_muted"
+                    android:textSize="22sp" />
+
+                <Spinner
+                    android:id="@+id/target_language"
+                    android:layout_width="132dp"
+                    android:layout_height="44dp"
+                    android:background="@drawable/spinner_surface"
+                    android:paddingStart="10dp"
+                    android:paddingEnd="6dp"
+                    android:popupBackground="@color/surface_raised" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <TextView
+            android:id="@+id/language_hint"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="Chọn ngôn ngữ dịch cho Upfile ▾ · Dataset dùng hướng dịch từng track"
+            android:textSize="12sp"
+            android:textColor="@color/text_muted" />
+
+        <TextView
+            android:id="@+id/current_audio"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:layout_marginBottom="8dp"
+            android:ellipsize="middle"
+            android:maxLines="2"
+            android:text="Chưa chọn tệp audio · ASR — · Dịch —"
+            android:textColor="@color/text_muted"
+            android:textSize="12sp" />
+
+        <com.google.android.material.card.MaterialCardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            app:cardBackgroundColor="@color/surface"
+            app:cardCornerRadius="24dp"
+            app:cardElevation="0dp"
+            app:strokeColor="@color/stroke"
+            app:strokeWidth="1dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="18dp">
+
+                <TextView
+                    android:id="@+id/asr_language"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="ASR · Ngôn ngữ phát hiện: —"
+                    android:textColor="@color/accent_soft"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+
+                <EditText
+                    android:id="@+id/input_box"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:background="@android:color/transparent"
+                    android:contentDescription="Kết quả nhận dạng giọng nói"
+                    android:focusable="false"
+                    android:gravity="top|start"
+                    android:hint="Bản chép lời từ ASR sẽ hiển thị tại đây."
+                    android:inputType="textMultiLine"
+                    android:minLines="5"
+                    android:padding="0dp"
+                    android:textColor="@color/text_primary"
+                    android:textColorHint="@color/text_hint"
+                    android:textIsSelectable="true"
+                    android:textSize="18sp" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <com.google.android.material.card.MaterialCardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            app:cardBackgroundColor="@color/surface"
+            app:cardCornerRadius="24dp"
+            app:cardElevation="0dp"
+            app:strokeColor="@color/stroke"
+            app:strokeWidth="1dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="18dp">
+
+                <TextView
+                    android:id="@+id/translation_language"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="DỊCH · Ngôn ngữ đầu ra: English"
+                    android:textColor="@color/translation_soft"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+
+                <EditText
+                    android:id="@+id/output_box"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:background="@android:color/transparent"
+                    android:contentDescription="Kết quả dịch"
+                    android:focusable="false"
+                    android:gravity="top|start"
+                    android:hint="Bản dịch sẽ hiển thị tại đây."
+                    android:inputType="textMultiLine"
+                    android:minLines="5"
+                    android:padding="0dp"
+                    android:textColor="@color/text_primary"
+                    android:textColorHint="@color/text_hint"
+                    android:textIsSelectable="true"
+                    android:textSize="18sp" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <TextView
+            android:id="@+id/run_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:ellipsize="end"
+            android:maxLines="2"
+            android:text="Sẵn sàng"
+            android:textColor="@color/text_muted"
+            android:textIsSelectable="true"
+            android:textSize="13sp" />
+
+        <ProgressBar
+            android:id="@+id/run_progress"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="4dp"
+            android:layout_marginTop="7dp"
+            android:max="100"
+            android:progressBackgroundTint="@color/stroke"
+            android:progressTint="@color/primary" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:orientation="horizontal">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/select_audio"
+                android:layout_width="0dp"
+                android:layout_height="52dp"
+                android:layout_marginEnd="6dp"
+                android:layout_weight="1"
+                android:text="Upfile"
+                android:textAllCaps="false"
+                android:textSize="15sp"
+                app:backgroundTint="@color/primary"
+                app:cornerRadius="18dp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/cancel_work"
+                style="@style/Widget.Material3.Button.OutlinedButton"
+                android:layout_width="0dp"
+                android:layout_height="52dp"
+                android:layout_marginStart="6dp"
+                android:layout_weight="1"
+                android:text="Tạm dừng"
+                android:textAllCaps="false"
+                android:textSize="15sp"
+                app:cornerRadius="18dp"
+                app:strokeColor="@color/stroke_bright" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:orientation="horizontal">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/download_dataset"
+                style="@style/Widget.Material3.Button.OutlinedButton"
+                android:layout_width="0dp"
+                android:layout_height="56dp"
+                android:layout_marginEnd="6dp"
+                android:layout_weight="1.45"
+                android:text="Lấy dữ liệu Qualcomm"
+                android:textAllCaps="false"
+                android:textSize="13sp"
+                app:cornerRadius="18dp"
+                app:strokeColor="@color/stroke_bright" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/save_results"
+                android:layout_width="0dp"
+                android:layout_height="56dp"
+                android:layout_marginStart="6dp"
+                android:layout_weight="1"
+                android:text="Xuất kết quả"
+                android:textAllCaps="false"
+                android:textSize="13sp"
+                android:textColor="@color/export_text"
+                app:backgroundTint="@color/export_background"
+                app:cornerRadius="18dp" />
+        </LinearLayout>
+
+        <CheckBox
+            android:id="@+id/dataset_tracks"
+            android:layout_width="1dp"
+            android:layout_height="1dp"
+            android:checked="true"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/model_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:gravity="center"
+            android:text="Đang kiểm tra model…"
+            android:textColor="@color/text_hint"
+            android:textSize="12sp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:gravity="center"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/retry_models"
+                style="?android:attr/borderlessButtonStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="44dp"
+                android:text="Tải lại model"
+                android:textAllCaps="false"
+                android:textColor="@color/text_muted" />
+
+        </LinearLayout>
+    </LinearLayout>
+</ScrollView>

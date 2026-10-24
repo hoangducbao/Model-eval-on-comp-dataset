@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="app_background">#0D0E10</color>
+    <color name="surface">#17181C</color>
+    <color name="surface_raised">#23242A</color>
+    <color name="stroke">#303238</color>
+    <color name="stroke_bright">#4A4D55</color>
+    <color name="primary">#EAEAF0</color>
+    <color name="text_primary">#F2F2F6</color>
+    <color name="text_muted">#AAAEB8</color>
+    <color name="text_hint">#777B85</color>
+    <color name="accent_soft">#A8D77C</color>
+    <color name="translation_soft">#AFC6FF</color>
+</resources>
