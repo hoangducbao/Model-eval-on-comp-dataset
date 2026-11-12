@@ -128,15 +128,36 @@ public final class OrtSessionConfig {
     }
 
     private static boolean qnnRegistered;
+    /** The QNN NPU device of the last addQnnHtp (HtpShared allocator lookup). */
+    static volatile OrtEpDevice npuDevice;
+    /**
+     * NPU graph I/O in HTP shared memory (util/HtpShared). Off: pref "htp_shared_io"
+     * = false in the TranslationActivity prefs (debug: run-as), read at the first NPU session.
+     */
+    static volatile boolean htpSharedIo = true;
 
     /** Settings › "Giới hạn công suất (TDP)", in TranslationActivity's getPreferences file. */
     public static final String PREF_TDP_LIMIT = "tdp_limit";
+    /** Settings › "Giảm nhiệt, giữ tốc độ": same NPU clocks, less CPU busy-work (read at load). */
+    public static final String PREF_COOL_RUN = "cool_run";
 
-    /** burst by default; the TDP switch trades speed for heat (read once per session load). */
+    public static boolean coolRun(Context context) {
+        return context.getSharedPreferences("TranslationActivity", Context.MODE_PRIVATE)
+                .getBoolean(PREF_COOL_RUN, false);
+    }
+
+    /**
+     * burst by default; the TDP switch trades speed for heat (read once per session load).
+     * Cool run: sustained_high_performance. In the shipped plugin (onnxruntime-android-qnn 2.7.0,
+     * disassembled HtpPowerConfigManager::SetHtpPerformancePowerConfig) it jumps to the same HTP
+     * vote as burst (max core + bus corner, 40 us sleep latency, DCVS off); only burst also turns
+     * on 9999 us DSPQ polling (QnnEp ctor / GetPerThreadHtpPowerConfigs: mode == burst), so the
+     * calling CPU thread spun up to 10 ms of every graph run instead of sleeping until it ends.
+     */
     static String htpPerfMode(Context context) {
         boolean limit = context.getSharedPreferences("TranslationActivity", Context.MODE_PRIVATE)
                 .getBoolean(PREF_TDP_LIMIT, false);
-        return limit ? "balanced" : "burst";
+        return limit ? "balanced" : coolRun(context) ? "sustained_high_performance" : "burst";
     }
 
     /**
@@ -179,6 +200,10 @@ public final class OrtSessionConfig {
             opts.put("backend_type", "htp");
             String perf = htpPerfMode(context);
             opts.put("htp_performance_mode", perf);
+            htpSharedIo = context.getSharedPreferences("TranslationActivity", Context.MODE_PRIVATE)
+                    .getBoolean("htp_shared_io", true);
+            if (htpSharedIo) opts.put("enable_htp_shared_memory_allocator", "1");
+            npuDevice = npu.get(0);
             options.addExecutionProvider(npu, opts);
             Log.i(TAG, "QNN HTP performance mode " + perf);
             return true;

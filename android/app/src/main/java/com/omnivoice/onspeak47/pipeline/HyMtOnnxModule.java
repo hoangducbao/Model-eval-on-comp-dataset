@@ -35,6 +35,8 @@ import android.content.Context;
 import android.content.res.AssetManager;
 import android.util.Log;
 
+import com.omnivoice.onspeak47.asr.AsrState;
+import com.omnivoice.onspeak47.asr.ScriptLid;
 import com.omnivoice.onspeak47.util.FileUtils;
 import com.omnivoice.onspeak47.util.OrtSessionConfig;
 
@@ -243,7 +245,7 @@ public class HyMtOnnxModule {
             int[] ids = new int[promptIds.length + 1];
             ids[0] = HyMtBpeTokenizer.BOS_ID;
             System.arraycopy(promptIds, 0, ids, 1, promptIds.length);
-            if (npu != null) return tokenizer.decode(npu.generate(ids, budget)).trim();
+            if (npu != null) return tokenizer.decode(npu.generate(npuPrompt(instruction, ids, budget), budget)).trim();
 
             int totalLen = ids.length;
             Map<String, OnnxTensor> feed = new HashMap<>();
@@ -591,7 +593,7 @@ public class HyMtOnnxModule {
                 int[] ids = new int[promptIds.length + 1];
                 ids[0] = HyMtBpeTokenizer.BOS_ID;
                 System.arraycopy(promptIds, 0, ids, 1, promptIds.length);
-                String text = tokenizer.decode(npu.generate(ids, budget, draftIds)).trim();
+                String text = tokenizer.decode(npu.generate(npuPrompt(instruction, ids, budget), budget, draftIds)).trim();
                 return new GenerateResult(text, npu.lastAccepted,
                         draftIds == null ? 0 : draftIds.length, true);
             } catch (Exception e) {
@@ -655,6 +657,41 @@ public class HyMtOnnxModule {
         }
     }
 
+    /**
+     * Forced-prefix context (CPU A/B 2026-10-27 on Hy-MT2 1.25-bit: `so graphic` after an
+     * appendix sentence -> `thật là kinh khủng` instead of `Đồ họa này thật tuyệt vời`, 0/4
+     * leaks, where HY-MT's context template leaked): the source becomes previous sentence +
+     * newline + this one and the previous translation + newline is forced after the
+     * assistant tag, so the decoder returns only this sentence's translation. Skipped past
+     * the run budget. Newline, not space (A/B 2026-10-29, 34 cases): with an unpunctuated
+     * previous segment the space join answered `，最近的地铁站…`, an empty line, or the
+     * previous sentence again in 7/10; the newline 0/10; punctuated input tied 1:1.
+     */
+    private int[] npuPrompt(String instruction, int[] plain, int budget) {
+        String[] c = HyMtNpuDecoder.CONTEXT.get();
+        if (c == null) return plain;
+        int[] head = tokenizer.encode(HyMtBpeTokenizer.USER_MARK + withContext(instruction, c[0])
+                + HyMtBpeTokenizer.ASSISTANT_MARK);
+        int[] prefix = tokenizer.encode(c[1] + "\n");
+        int len = 1 + head.length + prefix.length;
+        if (!HyMtNpuDecoder.contextFits(plain.length, len, budget, AsrState.MT_CONTEXT_EXTRA_RUNS)) {
+            Log.i(TAG, "mt context skipped: prompt " + plain.length + " -> " + len);
+            return plain;
+        }
+        int[] ids = new int[len];
+        ids[0] = HyMtBpeTokenizer.BOS_ID;
+        System.arraycopy(head, 0, ids, 1, head.length);
+        System.arraycopy(prefix, 0, ids, 1 + head.length, prefix.length);
+        Log.i(TAG, "mt context: prompt " + plain.length + " -> " + len);
+        return ids;
+    }
+
+    /** Every template ends with "\n" + text (whitespace collapsed): put {@code prev} on the line before. */
+    static String withContext(String instruction, String prev) {
+        int i = instruction.lastIndexOf('\n') + 1;
+        return instruction.substring(0, i) + prev + "\n" + instruction.substring(i);
+    }
+
     /** Translate one segment (prompt + budget + cleanup, like Python). */
     public String translateSentence(String text, String srcLang, String tgtLang) {
         return translateSentence(text, srcLang, tgtLang,
@@ -666,7 +703,7 @@ public class HyMtOnnxModule {
                                     java.util.List<String[]> examples) {
         int budget = estimateMaxTokens(text);
         String raw = generate(buildInstruction(text, srcLang, tgtLang, examples), budget);
-        return clean(raw);
+        return ScriptLid.keepEmails(text, clean(raw));
     }
 
     /**
@@ -677,7 +714,7 @@ public class HyMtOnnxModule {
                                              java.util.List<String[]> examples, int budget) {
         int b = budget > 0 ? Math.min(budget, MAX_OUTPUT_TOKENS_LONG) : estimateMaxTokens(text);
         String raw = generate(buildInstruction(text, srcLang, tgtLang, examples), b);
-        return clean(raw);
+        return ScriptLid.keepEmails(text, clean(raw));
     }
 
     /**
@@ -710,7 +747,7 @@ public class HyMtOnnxModule {
         int b = budget > 0 ? Math.min(budget, MAX_OUTPUT_TOKENS_LONG) : estimateMaxTokens(text);
         GenerateResult r = generateWithDraft(
                 buildInstruction(text, srcLang, tgtLang, examples), draftIds, b, beta);
-        return new SsbdResult(clean(r.text), r.accepted, r.draftLength, r.verified);
+        return new SsbdResult(ScriptLid.keepEmails(text, clean(r.text)), r.accepted, r.draftLength, r.verified);
     }
 
     /** SSBD translation result with paper §4 diagnostics (A/D). */
@@ -755,16 +792,20 @@ public class HyMtOnnxModule {
                                    java.util.List<String[]> examples) {
         boolean zhInvolved = (srcLang != null && srcLang.startsWith("zh"))
                 || (tgtLang != null && tgtLang.startsWith("zh"));
-        // This focused app intentionally omits the reference app's optional
-        // glossary and translation-memory prompt extensions. The base HY-MT
-        // prompt remains the same for the simple ASR -> MT pipeline.
-        if (zhInvolved) {
-            return "将以下文本翻译为" + zhName(tgtLang) + "，注意只需要输出翻译后的结果，不要额外解释：\n\n" + text;
+        // HY-MT's terminology template is Chinese-only, for every pair. Its
+        // English twin was ignored (CPU A/B 2026-10-16: 1/6 terms used vs 6/6).
+        String terms = Glossary.fragment(text, srcLang, tgtLang);
+        if (zhInvolved || !terms.isEmpty()) {
+            return terms + "将以下文本翻译为" + zhName(tgtLang) + "，注意只需要输出翻译后的结果，不要额外解释"
+                    + TatoebaText.examplesFragment(examples, true)
+                    + (terms.isEmpty() ? "：\n\n" : "：\n") + text;
         }
         // Hy-MT2's documented English default (HY-MT1.5: "Translate the following
         // segment into X, without additional explanation.").
         return "Translate the following text into " + enName(tgtLang)
-                + ". Note that you should only output the translated result without any additional explanation:\n\n" + text;
+                + TatoebaText.examplesFragment(examples, false)
+                + ". Note that you should only output the translated result without any additional explanation:\n\n"
+                + text;
     }
 
     static String enName(String code) {
@@ -787,7 +828,8 @@ public class HyMtOnnxModule {
         if (cut >= 0) raw = raw.substring(0, cut);
         raw = raw.replaceAll("</?(think|answer)>", "");
         // A budget cut can split a UTF-8 char (a trailing U+FFFD in the device log).
-        return raw.replace(String.valueOf((char) 0xFFFD), "").trim();
+        // The forced context's line break can come back: "or\n0918889999" (D:\apk34vnmail.txt).
+        return raw.replace(String.valueOf((char) 0xFFFD), "").trim().replaceAll("\\s*\\n\\s*", " ");
     }
 
     // ------------------------------------------------------------------
@@ -888,9 +930,8 @@ public class HyMtOnnxModule {
             }
             session = null;
         }
-        // OrtEnvironment is process-wide and is shared by the Qwen runtime.
-        // Closing it here would make a later foreground run use a closed global
-        // environment after the two model phases have completed once.
+        // larplarpsahur (local patch): OrtEnvironment is process-wide and shared with the
+        // Qwen runtime; the benchmark loads and closes both model sets repeatedly.
         env = null;
     }
 }

@@ -3,15 +3,34 @@ package com.larplarpsahur.pipeline;
 import java.text.Normalizer;
 import java.util.*;
 
-/** NFC/lowercase/punctuation-removal profile; corpus counts are aggregated, never averaged. */
+/**
+ * NFC/lowercase/punctuation-removal profile; corpus counts are aggregated, never averaged.
+ * Translation quality is reported as BLEU (sacreBLEU 13a/zh), chrF2 (sacreBLEU defaults),
+ * CER, character accuracy (1 - CER, floored at 0) and exact match after normalization.
+ * A "+num" language suffix ("vi+num") also spells digits out, for reference tables that
+ * were delivered normalized (Round 3 E_to_V: lowercase, no punctuation, numbers in words).
+ */
 public final class Metrics {
     public static final String PROFILE="nfc-lower-stripP-space-v1";
     private Metrics() {}
+    public static final String NUMBERS="+num",NUMBER_PROFILE="spell-digits-v1";
+    /** Language code for scoring a sample whose reference table is normalized. */
+    public static String scoring(String lang,boolean normalizedReference) {
+        return normalizedReference&&("vi".equals(lang)||"en".equals(lang))?lang+NUMBERS:lang;
+    }
+    private static String base(String lang) { return lang!=null&&lang.endsWith(NUMBERS)?lang.substring(0,lang.length()-NUMBERS.length()):lang; }
     public static String normalize(String text,String lang) {
-        String s=Normalizer.normalize(text==null?"":text,Normalizer.Form.NFC).toLowerCase(Locale.ROOT)
-            .replaceAll("\\p{P}","").replaceAll("[\\s\\p{Z}]+"," ").trim();
+        String s=Normalizer.normalize(text==null?"":text,Normalizer.Form.NFC).toLowerCase(Locale.ROOT);
+        // Normalized tables carry no symbols either ("ten dollars", not "$10").
+        if(lang!=null&&lang.endsWith(NUMBERS)) { lang=base(lang);s=Numbers.spell(s,lang).replaceAll("\\p{S}"," "); }
+        s=s.replaceAll("\\p{P}","").replaceAll("[\\s\\p{Z}]+"," ").trim();
         return "zh".equals(lang)?s.replace(" ",""):s;
     }
+    public static boolean exact(String ref,String hyp,String lang) {
+        String r=normalize(ref,lang);return !r.isEmpty()&&r.equals(normalize(hyp,lang));
+    }
+    /** 100 * (1 - CER), floored at 0: the share of reference characters the hypothesis got right. */
+    public static Double accuracy(Errors chars) { Double rate=chars.rate();return rate==null?null:100*Math.max(0,1-rate); }
     public static final class Errors {
         public long edits,length;
         public Errors(long e,long l) { edits=e;length=l; }
@@ -24,7 +43,7 @@ public final class Metrics {
         return new Errors(distance(r,h),r.length);
     }
     public static Errors words(String ref,String hyp,String lang) {
-        if("zh".equals(lang))return new Errors(0,0);
+        if("zh".equals(base(lang)))return new Errors(0,0);
         String r=normalize(ref,lang),h=normalize(hyp,lang);
         if(r.isEmpty())return new Errors(0,0);
         Map<String,Integer> ids=new HashMap<>();
@@ -76,8 +95,39 @@ public final class Metrics {
             List<String> key=new ArrayList<>(words.subList(i,i+n));result.put(key,result.getOrDefault(key,0)+1);
         }return result;
     }
+    /** sacreBLEU chrF defaults: character n-grams 1..6 without whitespace, beta 2, no word n-grams. */
+    public static final class Chrf {
+        private static final int ORDER=6;
+        public final long[] hyp=new long[ORDER],ref=new long[ORDER],match=new long[ORDER];
+        public int references;
+        public void add(String reference,String hypothesis,String lang) {
+            if(reference==null||normalize(reference,lang).isEmpty())return;
+            references++;
+            int[] r=normalize(reference,lang).replace(" ","").codePoints().toArray(),h=normalize(hypothesis,lang).replace(" ","").codePoints().toArray();
+            for(int n=1;n<=ORDER;n++) {
+                Map<String,Integer> rc=grams(r,n),hc=grams(h,n);
+                // As sacreBLEU: hypothesis n-grams only count where the reference has n-grams of that order.
+                if(r.length>=n)hyp[n-1]+=Math.max(0,h.length-n+1);
+                ref[n-1]+=Math.max(0,r.length-n+1);
+                for(Map.Entry<String,Integer> e:hc.entrySet())match[n-1]+=Math.min(e.getValue(),rc.getOrDefault(e.getKey(),0));
+            }
+        }
+        public Double score() {
+            if(references==0)return null;
+            double precision=0,recall=0;int effective=0;
+            for(int i=0;i<ORDER;i++)if(hyp[i]>0&&ref[i]>0) { precision+=match[i]/(double)hyp[i];recall+=match[i]/(double)ref[i];effective++; }
+            if(effective==0)return 0.0;
+            precision/=effective;recall/=effective;
+            return precision+recall==0?0.0:100*5*precision*recall/(4*precision+recall);
+        }
+        private static Map<String,Integer> grams(int[] chars,int n) {
+            Map<String,Integer> result=new HashMap<>();
+            for(int i=0;i+n<=chars.length;i++)result.merge(new String(chars,i,n),1,Integer::sum);
+            return result;
+        }
+    }
     public static List<String> tokens(String text,String lang) {
-        String s=normalize(text,lang);
+        String s=normalize(text,lang);lang=base(lang);
         if("zh".equals(lang)) {
             StringBuilder split=new StringBuilder();
             s.codePoints().forEach(cp->{ if(chinese(cp))split.append(' ').appendCodePoint(cp).append(' ');else split.appendCodePoint(cp); });s=split.toString();
@@ -95,6 +145,8 @@ public final class Metrics {
         for(int[] r:ranges)if(c>=r[0]&&c<=r[1])return true;return false;
     }
     public static String signature(String lang,boolean sentence) {
-        return "nrefs:1|case:lc|eff:"+(sentence?"yes":"no")+"|tok:"+("zh".equals(lang)?"zh":"13a")+"|smooth:exp|profile:"+PROFILE+"|implementation:larplarpsahur-1";
+        return "nrefs:1|case:lc|eff:"+(sentence?"yes":"no")+"|tok:"+("zh".equals(base(lang))?"zh":"13a")+"|smooth:exp|profile:"+PROFILE
+            +(lang!=null&&lang.endsWith(NUMBERS)?"+"+NUMBER_PROFILE:"")+"|implementation:larplarpsahur-1";
     }
+    public static final String CHRF_SIGNATURE="nrefs:1|case:lc|eff:yes|nc:6|nw:0|space:no|implementation:larplarpsahur-1";
 }

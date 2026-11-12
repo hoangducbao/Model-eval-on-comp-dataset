@@ -55,7 +55,9 @@ public class CoreTest {
         DatasetScanner.Sample vi=find(scan,"VM-vi"),zh=find(scan,"VM-zh"),ev=find(scan,"EV-en");
         assertEquals("zh",vi.targetLanguage);assertEquals("你好",vi.referenceTranslation);
         assertEquals("Xin chào",vi.referenceTranscript);assertEquals("vi",zh.targetLanguage);
-        assertEquals("你好",zh.referenceTranscript);assertNull(ev.referenceTranscript);assertNull(ev.referenceTranslation);
+        assertEquals("你好",zh.referenceTranscript);
+        // A stray .txt beside EV audio is not a reference; EV is joined to a table by ID only.
+        assertNull(ev.referenceTranscript);assertNull(ev.referenceTranslation);assertEquals("vi",ev.targetLanguage);
         DatasetScanner.Scan override=DatasetScanner.scan(root,"en",false,"VM-vi",1);
         assertEquals(1,override.samples.size());assertNull(override.samples.get(0).referenceTranslation);
     }

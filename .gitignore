@@ -11,3 +11,4 @@ outputs/
 **/.idea/
 *.apk
 *.log
+android/**/.cxx/

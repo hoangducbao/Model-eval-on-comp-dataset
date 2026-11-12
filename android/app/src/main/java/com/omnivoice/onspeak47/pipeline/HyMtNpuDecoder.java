@@ -39,13 +39,15 @@ import android.os.Build;
 import android.util.Log;
 
 import com.omnivoice.onspeak47.util.FileUtils;
+import com.omnivoice.onspeak47.util.HtpShared;
+import com.omnivoice.onspeak47.util.LoopGuard;
+import com.omnivoice.onspeak47.util.NpuGraph;
 import com.omnivoice.onspeak47.util.NpuStats;
 import com.omnivoice.onspeak47.util.OrtSessionConfig;
 
 import java.io.File;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.util.Locale;
 import java.nio.LongBuffer;
 import java.nio.ShortBuffer;
 import java.util.HashMap;
@@ -92,12 +94,28 @@ public final class HyMtNpuDecoder implements AutoCloseable {
     private final Map<String, OnnxTensor> pastFeed = new HashMap<>();  // zero-copy views
     private final Map<String, OnnxTensor> shortFeed = new HashMap<>();
     private final Map<String, OnnxTensor> cacheFeed = new HashMap<>();
+    private final NpuGraph shortG, decodeG;   // fixed I/O buffers: runs allocate nothing
+    private NpuGraph prefillG;                // with the 960-slot cache, on the first long prompt
     /** Draft tokens accepted by the last generate() call (caller holds the module lock). */
     int lastAccepted;
+    /**
+     * Set by PipelineOrchestrator around one MT call on its own thread. A live preview
+     * stops between tokens once a commit wants the decoder (its partial output is the
+     * commit's draft) instead of holding it for up to a whole decode.
+     */
+    static final ThreadLocal<java.util.function.BooleanSupplier> CANCEL = new ThreadLocal<>();
+    /** Previous commit {source, translation}, set by PipelineOrchestrator around a commit's MT call. */
+    static final ThreadLocal<String[]> CONTEXT = new ThreadLocal<>();
+
+    /** A context prompt of ctxLen is used only within the extra-run budget and on the 256-slot graphs. */
+    static boolean contextFits(int plainLen, int ctxLen, int budget, int extraRuns) {
+        int extra = (ctxLen + PREFILL - 1) / PREFILL - (plainLen + PREFILL - 1) / PREFILL;
+        return extra <= extraRuns && ctxLen + budget <= SLOTS && ctxLen <= SHORT;
+    }
 
     /** @return the decoder, or null when not staged for this SoC / no QNN NPU. */
     static HyMtNpuDecoder tryCreate(Context context, File dir) {
-        String soc = Build.VERSION.SDK_INT >= 31 ? Build.SOC_MODEL.toLowerCase(Locale.ROOT) : "";
+        String soc = Build.VERSION.SDK_INT >= 31 ? Build.SOC_MODEL.toLowerCase() : "";
         File p = new File(dir, "hymt_ar64." + soc + ".ctx.onnx");
         File ps = new File(dir, "hymt_ar64_256." + soc + ".ctx.onnx");
         File d = new File(dir, "hymt_ar1." + soc + ".ctx.onnx");
@@ -124,13 +142,15 @@ public final class HyMtNpuDecoder implements AutoCloseable {
             kvNames[2 * i + 1] = "past_key_values." + i + ".value";
         }
         for (int k = 0; k < kvNames.length; k++) {
-            shortPast[k] = fp16(HEADS * SHORT * DIM);
-            cache[k] = fp16(HEADS * SLOTS * DIM);
-            shortFeed.put(kvNames[k], OnnxTensor.createTensor(env, shortPast[k],
-                    new long[]{1, HEADS, SHORT, DIM}, OnnxJavaType.FLOAT16));
-            cacheFeed.put(kvNames[k], OnnxTensor.createTensor(env, cache[k],
-                    new long[]{1, HEADS, SLOTS, DIM}, OnnxJavaType.FLOAT16));
+            OnnxTensor s = HtpShared.tensor(prefillShort, new long[]{1, HEADS, SHORT, DIM}, OnnxJavaType.FLOAT16);
+            OnnxTensor c = HtpShared.tensor(decode, new long[]{1, HEADS, SLOTS, DIM}, OnnxJavaType.FLOAT16);
+            shortPast[k] = HtpShared.buffer(s).asShortBuffer();
+            cache[k] = HtpShared.buffer(c).asShortBuffer();
+            shortFeed.put(kvNames[k], s);
+            cacheFeed.put(kvNames[k], c);
         }
+        shortG = new NpuGraph(prefillShort, shortFeed);
+        decodeG = new NpuGraph(decode, cacheFeed);
         NpuStats.mtOnNpu = true;
         Log.i(TAG, "HY-MT on QNN HTP ready in " + (System.currentTimeMillis() - t0) + " ms");
     }
@@ -147,20 +167,17 @@ public final class HyMtNpuDecoder implements AutoCloseable {
         return s;
     }
 
-    /** The 960-slot prefill cache (63 MB), only once a prompt needs it. */
-    private Map<String, OnnxTensor> longFeed() throws Exception {
-        if (pastFeed.isEmpty()) {
+    /** The 960-slot prefill graph and cache (63 MB), only once a prompt needs it. */
+    private NpuGraph longGraph() throws Exception {
+        if (prefillG == null) {
             for (int k = 0; k < kvNames.length; k++) {
-                past[k] = fp16(HEADS * PAST * DIM);
-                pastFeed.put(kvNames[k], OnnxTensor.createTensor(env, past[k],
-                        new long[]{1, HEADS, PAST, DIM}, OnnxJavaType.FLOAT16));
+                OnnxTensor t = HtpShared.tensor(prefill, new long[]{1, HEADS, PAST, DIM}, OnnxJavaType.FLOAT16);
+                past[k] = HtpShared.buffer(t).asShortBuffer();
+                pastFeed.put(kvNames[k], t);
             }
+            prefillG = new NpuGraph(prefill, pastFeed);
         }
-        return pastFeed;
-    }
-
-    private static ShortBuffer fp16(int n) {
-        return ByteBuffer.allocateDirect(n * 2).order(ByteOrder.nativeOrder()).asShortBuffer();
+        return prefillG;
     }
 
     /** Free slots in the last prefill chunk: a draft that fits there costs no run. */
@@ -184,8 +201,7 @@ public final class HyMtNpuDecoder implements AutoCloseable {
         long t0 = System.nanoTime();
         boolean small = ids.length + budget <= SLOTS;   // decodes on the 256-slot graph
         boolean shortPre = small && seq.length <= SHORT;
-        OrtSession pre = shortPre ? prefillShort : prefill;
-        Map<String, OnnxTensor> preFeed = shortPre ? shortFeed : longFeed();
+        NpuGraph pre = shortPre ? shortG : longGraph();
         ShortBuffer[] preBuf = shortPre ? shortPast : past;
         int preSlots = shortPre ? SHORT : PAST;
         long[] next = null;
@@ -194,7 +210,7 @@ public final class HyMtNpuDecoder implements AutoCloseable {
             int m = Math.min(PREFILL, seq.length - s);
             long[] x = new long[PREFILL];
             for (int j = 0; j < m; j++) x[j] = seq[s + j];
-            next = step(pre, x, s, m, preFeed, preBuf, preSlots);
+            next = step(pre, x, s, m, preBuf, preSlots);
             if (s + m >= seq.length) break;
         }
         // next[j] = greedy token after seq[s + j]; the last prompt token and the
@@ -212,7 +228,7 @@ public final class HyMtNpuDecoder implements AutoCloseable {
             int at = ids.length + acc, m = Math.min(Math.min(PREFILL, dmax - acc), preSlots - at);
             long[] x = new long[PREFILL];
             for (int j = 0; j < m; j++) x[j] = draft[acc + j];
-            next = step(pre, x, at, m, preFeed, preBuf, preSlots);
+            next = step(pre, x, at, m, preBuf, preSlots);
             int j = 0;   // next[j] = greedy token after draft[acc + j]
             while (j < m - 1 && next[j] == draft[acc + 1 + j]) j++;
             acc += 1 + j;
@@ -224,18 +240,24 @@ public final class HyMtNpuDecoder implements AutoCloseable {
         lastAccepted = acc;
         long t1 = System.nanoTime();
         if (small) for (int k = 0; k < kvNames.length; k++) copySlots(preBuf[k], preSlots, cache[k], SLOTS, n);
-        OrtSession sess = small ? decode : prefill;
-        Map<String, OnnxTensor> feed = small ? cacheFeed : pastFeed;
+        NpuGraph sess = small ? decodeG : longGraph();
         ShortBuffer[] buf = small ? cache : past;
         int slots = small ? SLOTS : PAST;
         long[] x = new long[small ? 1 : PREFILL];
         int[] out = new int[budget];
         int len = acc;
         if (acc > 0) System.arraycopy(draft, 0, out, 0, acc);
-        while (len < budget && tok != HyMtBpeTokenizer.EOS_ID && n < slots) {
+        java.util.function.BooleanSupplier stop = CANCEL.get();
+        while (len < budget && tok != HyMtBpeTokenizer.EOS_ID && n < slots
+                && (stop == null || !stop.getAsBoolean())) {
             out[len++] = (int) tok;
+            int keep = LoopGuard.cut(out, len);   // a looping run used to fill the whole budget
+            if (keep >= 0) {
+                len = keep;
+                break;
+            }
             x[0] = tok;
-            tok = step(sess, x, n, 1, feed, buf, slots)[0];
+            tok = step(sess, x, n, 1, buf, slots)[0];
             n++;
         }
         long t2 = System.nanoTime();
@@ -253,40 +275,29 @@ public final class HyMtNpuDecoder implements AutoCloseable {
     }
 
     /** One run over {@code buf} ([4][slots][128]); writes the m new K/V rows at slots [n, n+m). */
-    private long[] step(OrtSession sess, long[] ids, int n, int m, Map<String, OnnxTensor> past,
-                        ShortBuffer[] buf, int slots) throws Exception {
+    private long[] step(NpuGraph g, long[] ids, int n, int m, ShortBuffer[] buf, int slots) throws Exception {
         int ar = ids.length;
-        long[] mask = new long[slots + ar];
-        for (int i = 0; i < n; i++) mask[i] = 1;
-        for (int j = 0; j < m; j++) mask[slots + j] = 1;
-        long[] pos = new long[ar];
-        for (int j = 0; j < ar; j++) pos[j] = n + j;
-        try (OnnxTensor x = OnnxTensor.createTensor(env, LongBuffer.wrap(ids), new long[]{1, ar});
-             OnnxTensor am = OnnxTensor.createTensor(env, LongBuffer.wrap(mask), new long[]{1, slots + ar});
-             OnnxTensor p = OnnxTensor.createTensor(env, LongBuffer.wrap(pos), new long[]{1, ar})) {
-            Map<String, OnnxTensor> feed = new HashMap<>(past);
-            feed.put("input_ids", x);
-            feed.put("attention_mask", am);
-            feed.put("position_ids", p);
-            try (OrtSession.Result r = NpuStats.run(sess, feed, NpuStats.MT)) {
-                for (int k = 0; k < kvNames.length; k++) {
-                    String name = kvNames[k].replace("past_key_values.", "new.");
-                    ShortBuffer src = ((OnnxTensor) r.get(name).get()).getShortBuffer();
-                    for (int h = 0; h < HEADS; h++) {
-                        for (int j = 0; j < m; j++) {
-                            ShortBuffer row = src.duplicate();
-                            row.position((h * ar + j) * DIM).limit((h * ar + j + 1) * DIM);
-                            ShortBuffer dst = buf[k].duplicate();
-                            dst.position((h * slots + n + j) * DIM);
-                            dst.put(row);
-                        }
-                    }
+        g.buf("input_ids").asLongBuffer().put(ids);
+        LongBuffer mask = g.buf("attention_mask").asLongBuffer();
+        for (int i = 0; i < slots + ar; i++) mask.put(i < n || (i >= slots && i < slots + m) ? 1 : 0);
+        LongBuffer pos = g.buf("position_ids").asLongBuffer();
+        for (int j = 0; j < ar; j++) pos.put(n + j);
+        g.run(NpuStats.MT);
+        for (int k = 0; k < kvNames.length; k++) {
+            ShortBuffer src = g.buf(kvNames[k].replace("past_key_values.", "new.")).asShortBuffer();
+            for (int h = 0; h < HEADS; h++) {
+                for (int j = 0; j < m; j++) {
+                    ShortBuffer row = src.duplicate();
+                    row.position((h * ar + j) * DIM).limit((h * ar + j + 1) * DIM);
+                    ShortBuffer dst = buf[k].duplicate();
+                    dst.position((h * slots + n + j) * DIM);
+                    dst.put(row);
                 }
-                long[] next = new long[ar];
-                ((OnnxTensor) r.get("next_ids").get()).getLongBuffer().get(next);
-                return next;
             }
         }
+        long[] next = new long[ar];
+        g.buf("next_ids").asLongBuffer().get(next);
+        return next;
     }
 
     /** First n slots of every head, [4][from][128] -> [4][to][128]. */
@@ -301,6 +312,7 @@ public final class HyMtNpuDecoder implements AutoCloseable {
     }
 
     @Override public void close() {
+        for (NpuGraph g : new NpuGraph[]{prefillG, shortG, decodeG}) if (g != null) g.close();
         for (OnnxTensor t : pastFeed.values()) t.close();
         for (OnnxTensor t : shortFeed.values()) t.close();
         for (OnnxTensor t : cacheFeed.values()) t.close();

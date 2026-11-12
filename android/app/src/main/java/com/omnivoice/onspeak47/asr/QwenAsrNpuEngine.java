@@ -23,6 +23,8 @@ import android.os.Build;
 import android.util.Log;
 
 import com.omnivoice.onspeak47.util.FileUtils;
+import com.omnivoice.onspeak47.util.HtpShared;
+import com.omnivoice.onspeak47.util.NpuGraph;
 import com.omnivoice.onspeak47.util.NpuStats;
 import com.omnivoice.onspeak47.util.OrtSessionConfig;
 
@@ -30,9 +32,6 @@ import java.io.File;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.util.Locale;
-import java.nio.FloatBuffer;
-import java.nio.LongBuffer;
 import java.nio.ShortBuffer;
 import java.nio.channels.FileChannel;
 import java.util.Arrays;
@@ -60,16 +59,19 @@ public final class QwenAsrNpuEngine extends StreamingAsrEngine implements QwenAs
     private final AsrLanguage lang;
     private final OrtEnvironment env = OrtEnvironment.getEnvironment();
     private final OrtSession enc, ar64, ar1;
+    private final NpuGraph encG, ar64G, ar1G;   // fixed I/O buffers: runs allocate nothing
     private final ShortBuffer[] cache = new ShortBuffer[2 * L];         // [8][512][128] fp16, k_0..27, v_0..27
     private final Map<String, OnnxTensor> pastFeed = new HashMap<>();   // zero-copy views of `cache`
     private final QwenAsr asr;
     private final ExecutorService worker = Executors.newSingleThreadExecutor(r -> new Thread(r, "QwenAsr"));
+    private float[] feats;              // encoder output, reused (QwenAsr copies the rows it keeps)
+    private long encNs, preNs, decNs;   // worker thread: per-step time split for the log
 
-    // utterance audio + scheduling, guarded by `this`. ponytail: the whole utterance stays in
-    // `audio` (64 KB/s), only the part after the recognizer's last 20 s cut is copied per step;
-    // trim it too if endpoint-free speech runs for many minutes.
+    // utterance audio + scheduling, guarded by `this`. audio[0] is utterance sample `base`:
+    // samples before the recognizer's last 20 s cut are dropped (D:\apk21.txt: one
+    // endpoint-free utterance ran 8.5 min).
     private float[] audio = new float[QwenAsr.SR * 8];
-    private int len, scheduled, finalLen = -1, generation, asrGeneration = -1;
+    private int base, len, scheduled, finalLen = -1, generation, asrGeneration = -1;
     private boolean ending, cutKnown;   // cutKnown: asr.start belongs to this utterance
     private Future<?> pending;
     private volatile String text = "";
@@ -77,7 +79,7 @@ public final class QwenAsrNpuEngine extends StreamingAsrEngine implements QwenAs
     /** @return the engine, or null when not staged / stale / no QNN HTP. */
     static StreamingAsrEngine tryCreate(Context context, AsrLanguage lang) {
         File dir = context.getExternalFilesDir(EXT_DIR);
-        String soc = Build.VERSION.SDK_INT >= 31 ? Build.SOC_MODEL.toLowerCase(Locale.ROOT) : "";
+        String soc = Build.VERSION.SDK_INT >= 31 ? Build.SOC_MODEL.toLowerCase() : "";
         if (dir == null || soc.isEmpty()) return null;
         File e = new File(dir, "qasr_enc." + soc + ".ctx.onnx");
         File p = new File(dir, "qasr_ar64." + soc + ".ctx.onnx");
@@ -104,10 +106,13 @@ public final class QwenAsrNpuEngine extends StreamingAsrEngine implements QwenAs
         ar64 = open(context, p, true);
         ar1 = open(context, d, true);
         for (int k = 0; k < 2 * L; k++) {
-            cache[k] = ByteBuffer.allocateDirect(KVH * CTX * HD * 2).order(ByteOrder.nativeOrder()).asShortBuffer();
-            pastFeed.put((k < L ? "past_k_" : "past_v_") + k % L, OnnxTensor.createTensor(env, cache[k],
-                    new long[]{1, KVH, CTX, HD}, OnnxJavaType.FLOAT16));
+            OnnxTensor t = HtpShared.tensor(ar64, new long[]{1, KVH, CTX, HD}, OnnxJavaType.FLOAT16);
+            cache[k] = HtpShared.buffer(t).asShortBuffer();
+            pastFeed.put((k < L ? "past_k_" : "past_v_") + k % L, t);
         }
+        encG = new NpuGraph(enc, new HashMap<>());
+        ar64G = new NpuGraph(ar64, pastFeed);
+        ar1G = new NpuGraph(ar1, pastFeed);
         ByteBuffer map;
         try (RandomAccessFile f = new RandomAccessFile(assets, "r")) {
             map = f.getChannel().map(FileChannel.MapMode.READ_ONLY, 0, f.length());  // stays valid after close
@@ -132,55 +137,51 @@ public final class QwenAsrNpuEngine extends StreamingAsrEngine implements QwenAs
     // ---- QwenAsr.Model over the EPContext graphs ----
 
     @Override public float[] encode(float[] mel, float[] mask) throws Exception {
-        try (OnnxTensor m = OnnxTensor.createTensor(env, FloatBuffer.wrap(mel), new long[]{1, 128, QwenAsr.BLOCK});
-             OnnxTensor k = OnnxTensor.createTensor(env, FloatBuffer.wrap(mask), new long[]{1, 1, 1, QwenAsr.ROWS});
-             OrtSession.Result r = NpuStats.run(enc, feed("mel", m, "mask", k), NpuStats.ASR)) {
-            FloatBuffer b = ((OnnxTensor) r.get(0)).getFloatBuffer();
-            float[] out = new float[b.remaining()];
-            b.get(out);
-            return out;
-        }
+        long t0 = System.nanoTime();
+        encG.buf("mel").asFloatBuffer().put(mel);
+        encG.buf("mask").asFloatBuffer().put(mask);
+        encG.run(NpuStats.ASR);
+        java.nio.FloatBuffer b = encG.buf(enc.getOutputNames().iterator().next()).asFloatBuffer();
+        if (feats == null) feats = new float[b.remaining()];
+        b.get(feats);
+        encNs += System.nanoTime() - t0;
+        return feats;
     }
 
     @Override public long[] decode(float[] x, long[] pos, float[] mask, int slot, int valid) throws Exception {
+        long t0 = System.nanoTime();
         int ar = pos.length;
-        try (OnnxTensor xt = OnnxTensor.createTensor(env, FloatBuffer.wrap(x), new long[]{1, ar, HID});
-             OnnxTensor pt = OnnxTensor.createTensor(env, LongBuffer.wrap(pos), new long[]{1, ar});
-             OnnxTensor mt = OnnxTensor.createTensor(env, FloatBuffer.wrap(mask), new long[]{ar, CTX + ar})) {
-            Map<String, OnnxTensor> f = new HashMap<>(pastFeed);
-            f.put("x", xt);
-            f.put("pos", pt);
-            f.put("mask", mt);
-            try (OrtSession.Result r = NpuStats.run(ar == 1 ? ar1 : ar64, f, NpuStats.ASR)) {
-                for (int kv = 0; kv < 2; kv++) {   // new_k/new_v [28][8][AR][128] -> slots [slot, slot+valid)
-                    ShortBuffer src = ((OnnxTensor) r.get(kv == 0 ? "new_k" : "new_v").get()).getShortBuffer();
-                    for (int l = 0; l < L; l++) {
-                        for (int h = 0; h < KVH; h++) {
-                            ShortBuffer s = src.duplicate();
-                            s.position(((l * KVH + h) * ar) * HD).limit(((l * KVH + h) * ar + valid) * HD);
-                            ShortBuffer dst = cache[kv * L + l].duplicate();
-                            dst.position((h * CTX + slot) * HD);
-                            dst.put(s);
-                        }
-                    }
+        NpuGraph g = ar == 1 ? ar1G : ar64G;
+        g.buf("x").asFloatBuffer().put(x);
+        g.buf("pos").asLongBuffer().put(pos);
+        g.buf("mask").asFloatBuffer().put(mask);
+        g.run(NpuStats.ASR);
+        for (int kv = 0; kv < 2; kv++) {   // new_k/new_v [28][8][AR][128] -> slots [slot, slot+valid)
+            ShortBuffer src = g.buf(kv == 0 ? "new_k" : "new_v").asShortBuffer();
+            for (int l = 0; l < L; l++) {
+                for (int h = 0; h < KVH; h++) {
+                    ShortBuffer s = src.duplicate();
+                    s.position(((l * KVH + h) * ar) * HD).limit(((l * KVH + h) * ar + valid) * HD);
+                    ShortBuffer dst = cache[kv * L + l].duplicate();
+                    dst.position((h * CTX + slot) * HD);
+                    dst.put(s);
                 }
-                long[] next = new long[ar];
-                ((OnnxTensor) r.get("next_ids").get()).getLongBuffer().get(next);
-                return next;
             }
         }
+        long[] next = new long[ar];
+        g.buf("next_ids").asLongBuffer().get(next);
+        if (ar == 1) decNs += System.nanoTime() - t0;
+        else preNs += System.nanoTime() - t0;
+        return next;
     }
 
-    private static Map<String, OnnxTensor> feed(String k1, OnnxTensor v1, String k2, OnnxTensor v2) {
-        Map<String, OnnxTensor> m = new HashMap<>();   // Map.of needs API 30
-        m.put(k1, v1);
-        m.put(k2, v2);
-        return m;
-    }
+    // ---- larplarpsahur (local patch, tools/onspeak47-local.patch) ----
 
-    // ---- StreamingAsrEngine ----
-
-    /** Synchronous file mode: preserve the model language tag and propagate errors. */
+    /**
+     * Synchronous whole-block recognition for file benchmarks: one decode with the full
+     * budget, no streaming prefix. Returns {language tag, text} and propagates errors.
+     * Not thread-safe; never mix with the streaming calls below.
+     */
     public String[] transcribeFileBlock(float[] samples) throws Exception {
         asr.reset();
         java.util.List<Integer> ids = asr.transcribe(samples,
@@ -188,10 +189,19 @@ public final class QwenAsrNpuEngine extends StreamingAsrEngine implements QwenAs
         return QwenAsr.parse(asr.decode(ids));
     }
 
+    // ---- StreamingAsrEngine ----
+
     @Override public synchronized void acceptAudio(float[] samples) {
         if (samples == null || ending) return;  // flush padding: Qwen needs no look-ahead
-        if (len + samples.length > audio.length) audio = Arrays.copyOf(audio, 2 * (len + samples.length));
-        System.arraycopy(samples, 0, audio, len, samples.length);
+        if (len - base + samples.length > audio.length) {
+            int keep = cutKnown ? Math.min(asr.start, len) : base;   // before the last cut: done
+            System.arraycopy(audio, keep - base, audio, 0, len - keep);
+            base = keep;
+            if (len - base + samples.length > audio.length) {
+                audio = Arrays.copyOf(audio, 2 * (len - base + samples.length));
+            }
+        }
+        System.arraycopy(samples, 0, audio, len - base, samples.length);
         len += samples.length;
     }
 
@@ -206,7 +216,7 @@ public final class QwenAsrNpuEngine extends StreamingAsrEngine implements QwenAs
                 if (len - scheduled < QwenAsr.CHUNK_SAMPLES || (pending != null && !pending.isDone())) return;
                 scheduled = len;
                 int n = len, gen = generation, from = cutKnown ? Math.min(asr.start, n) : 0;
-                float[] snap = Arrays.copyOfRange(audio, from, n);
+                float[] snap = Arrays.copyOfRange(audio, from - base, n - base);
                 pending = worker.submit(() -> run(snap, from, n, false, gen));
                 return;
             }
@@ -226,7 +236,7 @@ public final class QwenAsrNpuEngine extends StreamingAsrEngine implements QwenAs
             if (len <= finalLen) return;
             finalLen = scheduled = len;
             int n = len, gen = generation, from = cutKnown ? Math.min(asr.start, n) : 0;
-            float[] snap = Arrays.copyOfRange(audio, from, n);
+            float[] snap = Arrays.copyOfRange(audio, from - base, n - base);
             f = worker.submit(() -> run(snap, from, n, true, gen));  // queued behind a running step
         }
         try {
@@ -244,6 +254,14 @@ public final class QwenAsrNpuEngine extends StreamingAsrEngine implements QwenAs
         try {
             if (asrGeneration != gen) {
                 asr.reset();
+                // Glossary terms as Qwen3-ASR context, so a name like "Thắng" is not heard as the word.
+                // Newest first: past MAX_CONTEXT_TOKENS the oldest terms are the ones dropped.
+                java.util.Set<String> hot = new java.util.LinkedHashSet<>();
+                java.util.List<com.omnivoice.onspeak47.pipeline.Glossary.Term> terms =
+                        com.omnivoice.onspeak47.pipeline.Glossary.get();
+                for (int i = terms.size() - 1; i >= 0; i--) hot.add(terms.get(i).a);
+                asr.context(new java.util.ArrayList<>(hot));
+                if (!hot.isEmpty()) Log.i(TAG, "context " + hot + " -> " + asr.contextTokens + " tokens");
                 asrGeneration = gen;
                 synchronized (this) {
                     if (gen == generation) cutKnown = true;
@@ -251,13 +269,17 @@ public final class QwenAsrNpuEngine extends StreamingAsrEngine implements QwenAs
             }
             long t0 = System.nanoTime();
             int pre = asr.prefillRuns, dec = asr.decodeRuns;
+            encNs = preNs = decNs = 0;
             String t = asr.step(snap, from, n, fin);
             synchronized (this) {
                 if (gen == generation) text = t;
             }
-            Log.d(TAG, (fin ? "final" : "step") + " audio=" + n * 1000 / QwenAsr.SR + "ms prefill="
+            // enc/pre/dec = NPU runs incl. host I/O; the rest of took = mel + Java bookkeeping.
+            Log.d(TAG, (fin ? "final" : "step") + " audio=" + (long) n * 1000 / QwenAsr.SR + "ms prefill="
                     + (asr.prefillRuns - pre) + " decode=" + (asr.decodeRuns - dec) + " took="
-                    + (System.nanoTime() - t0) / 1_000_000 + "ms text=" + t);
+                    + (System.nanoTime() - t0) / 1_000_000 + "ms enc=" + encNs / 1_000_000 + " pre="
+                    + preNs / 1_000_000 + " dec=" + decNs / 1_000_000 + (asr.looped ? " loop-cut" : "") + " tail="
+                    + t.substring(Math.max(0, t.length() - 120)));
         } catch (Exception e) {
             Log.w(TAG, "Qwen3-ASR step failed", e);
         }
@@ -284,7 +306,7 @@ public final class QwenAsrNpuEngine extends StreamingAsrEngine implements QwenAs
     /** New utterance: drop audio and text; a step still running is discarded. */
     @Override public synchronized void reset() {
         generation++;
-        len = scheduled = 0;
+        base = len = scheduled = 0;
         finalLen = -1;
         ending = cutKnown = false;
         text = "";
@@ -292,6 +314,7 @@ public final class QwenAsrNpuEngine extends StreamingAsrEngine implements QwenAs
 
     @Override public void close() {
         worker.shutdownNow();
+        for (NpuGraph g : new NpuGraph[]{encG, ar64G, ar1G}) g.close();
         for (OnnxTensor t : pastFeed.values()) t.close();
         for (OrtSession s : new OrtSession[]{enc, ar64, ar1}) {
             try {

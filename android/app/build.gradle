@@ -7,20 +7,38 @@ def qwenModelBase = providers.gradleProperty('qwenModelBase')
 def hyMtModelBase = providers.gradleProperty('hyMtModelBase')
         .orElse('https://github.com/DS-PNQ/OnSpeak47-npu-models/releases/download/v2.1.0-npu/').get()
 
+// HtpShared JNI shim (QNN HTP shared-memory tensors, vendored from OnSpeak47). Needs the NDK
+// and CMake below; build with -PnoHtpShared to skip it — the app then feeds the NPU graphs
+// from plain direct buffers (slower per token, same results).
+def htpShared = !providers.gradleProperty('noHtpShared').isPresent()
+
+// Upstream commit of the vendored com.omnivoice.onspeak47 sources (written by tools/sync_onspeak47.sh).
+def onspeakCommit = rootProject.file('ONSPEAK47_UPSTREAM').readLines().find { it.startsWith('commit: ') }.substring(8, 16)
+
 android {
     namespace 'com.larplarpsahur'
     compileSdk 34
+    if (htpShared) {
+        ndkVersion '28.2.13676358'
+        externalNativeBuild {
+            cmake {
+                path 'src/main/jni/CMakeLists.txt'
+                version '3.22.1'
+            }
+        }
+    }
 
     defaultConfig {
         applicationId 'com.larplarpsahur'
         minSdk 27
         targetSdk 34
-        versionCode 4
-        versionName '1.0.3'
+        versionCode 5
+        versionName '1.1.0'
 
         buildConfigField 'String', 'QWEN_MODEL_BASE', '"' + qwenModelBase + '"'
         buildConfigField 'String', 'HYMT_MODEL_BASE', '"' + hyMtModelBase + '"'
         buildConfigField 'String', 'TOKENIZER_URL', '"' + providers.gradleProperty('tokenizerUrl').orElse('https://huggingface.co/tencent/Hy-MT2-1.8B/resolve/9a341cd1b679d3efd23b46e847b01745a71ed792/tokenizer.json').get() + '"'
+        buildConfigField 'String', 'ONSPEAK47_COMMIT', '"' + onspeakCommit + '"'
         buildConfigField 'String', 'TOKENIZER_SHA256', '"b475bbef1b0b2fd57dcb865332b546475bd1ede2deb3bb91bafd0c047a8a530a"'
         ndk {
             abiFilters 'arm64-v8a'
@@ -43,6 +61,15 @@ android {
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_11
         targetCompatibility JavaVersion.VERSION_11
+    }
+
+    testOptions {
+        unitTests.all {
+            // Vendored HyMtOnnxTest reads golden BPE vectors from a real tokenizer.json and skips without it.
+            systemProperty 'onspeak.hymtTokenizer', providers.gradleProperty('hymtTokenizer').orElse('').get()
+        }
+        // Vendored OnSpeak47 code logs through android.util.Log on its JVM-tested paths.
+        unitTests.returnDefaultValues = true
     }
 
     packaging {

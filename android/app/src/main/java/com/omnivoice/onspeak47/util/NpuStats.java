@@ -4,6 +4,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicLongArray;
 
 import ai.onnxruntime.OnnxTensorLike;
+import ai.onnxruntime.OnnxValue;
 import ai.onnxruntime.OrtException;
 import ai.onnxruntime.OrtSession;
 
@@ -24,9 +25,15 @@ public final class NpuStats {
 
     public static OrtSession.Result run(OrtSession s, Map<String, ? extends OnnxTensorLike> feed,
                                         int which) throws OrtException {
+        return run(s, feed, null, which);
+    }
+
+    /** {@code pinned}: outputs written into these tensors (null = ORT allocates them). */
+    public static OrtSession.Result run(OrtSession s, Map<String, ? extends OnnxTensorLike> feed,
+                                        Map<String, ? extends OnnxValue> pinned, int which) throws OrtException {
         long t0 = System.nanoTime();
         try {
-            return s.run(feed);
+            return pinned == null ? s.run(feed) : s.run(feed, pinned);
         } finally {
             BUSY_NS.addAndGet(which, System.nanoTime() - t0);
             RUNS.incrementAndGet(which);

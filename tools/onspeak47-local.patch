@@ -1,0 +1,41 @@
+--- a/android/app/src/main/java/com/omnivoice/onspeak47/asr/QwenAsrNpuEngine.java
++++ b/android/app/src/main/java/com/omnivoice/onspeak47/asr/QwenAsrNpuEngine.java
+@@ -175,6 +175,20 @@
+         return next;
+     }
+ 
++    // ---- larplarpsahur (local patch, tools/onspeak47-local.patch) ----
++
++    /**
++     * Synchronous whole-block recognition for file benchmarks: one decode with the full
++     * budget, no streaming prefix. Returns {language tag, text} and propagates errors.
++     * Not thread-safe; never mix with the streaming calls below.
++     */
++    public String[] transcribeFileBlock(float[] samples) throws Exception {
++        asr.reset();
++        java.util.List<Integer> ids = asr.transcribe(samples,
++                java.util.Collections.emptyList(), java.util.Collections.emptyList(), QwenAsr.CTX - 1);
++        return QwenAsr.parse(asr.decode(ids));
++    }
++
+     // ---- StreamingAsrEngine ----
+ 
+     @Override public synchronized void acceptAudio(float[] samples) {
+--- a/android/app/src/main/java/com/omnivoice/onspeak47/pipeline/HyMtOnnxModule.java
++++ b/android/app/src/main/java/com/omnivoice/onspeak47/pipeline/HyMtOnnxModule.java
+@@ -930,12 +930,8 @@
+             }
+             session = null;
+         }
+-        if (env != null) {
+-            try {
+-                env.close();
+-            } catch (Exception ignored) {
+-            }
+-            env = null;
+-        }
++        // larplarpsahur (local patch): OrtEnvironment is process-wide and shared with the
++        // Qwen runtime; the benchmark loads and closes both model sets repeatedly.
++        env = null;
+     }
+ }
