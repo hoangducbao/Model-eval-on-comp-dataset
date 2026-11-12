@@ -5,12 +5,13 @@
 ## 1. Chuẩn bị
 
 - Windows PowerShell, Git, JDK 21 và Android SDK Platform 34 cùng Build Tools/Platform Tools tương thích Gradle của dự án. Có thể cài SDK bằng Android Studio.
+- Từ bản 1.1.0: **NDK 28.2.13676358** và **CMake 3.22.1** (SDK Manager › SDK Tools) để build thư viện `libhtpshared.so` (bộ nhớ dùng chung với NPU, lấy từ OnSpeak47). Nếu không cài NDK, thêm `-PnoHtpShared` vào lệnh Gradle: app vẫn chạy đúng nhưng mỗi token chậm hơn.
 - `java`, `adb` và `ssh` có trong PATH; kiểm tra bằng `java -version`, `adb version`, `ssh -V`.
 - APK chỉ chứa ABI `arm64-v8a`, Android tối thiểu API 27. **Chạy inference NPU cần thiết bị SM8850, Android 12+ và driver QNN tương thích**; không đảm bảo chạy trên mọi điện thoại/emulator.
 - Internet và dung lượng trống cho model khoảng 1,85 GB, ZIP dataset khoảng 93 MB, dữ liệu giải nén và kết quả.
 - Tài khoản Qualcomm Device Cloud (QDC), session còn hoạt động và tùy chọn SSH tunnel nếu cần điều khiển từ máy tính.
 
-Repo có thư viện sherpa-onnx AAR trong `android/app/libs/`; model được tải riêng khi mở app lần đầu. Không cần `qdc_build_run.py`.
+Model được tải riêng khi mở app lần đầu. Không cần `qdc_build_run.py`. Mã ASR/dịch trong `com.omnivoice.onspeak47` được sao chép từ [OnSpeak47](https://github.com/DS-PNQ/OnSpeak47) nhánh `hymt2+qwen3asr`; commit đang dùng ghi trong `android/ONSPEAK47_UPSTREAM`.
 
 ## 2. Clone, build và xuất APK
 
@@ -113,7 +114,54 @@ Nếu cài bản build từ máy khác báo `INSTALL_FAILED_UPDATE_INCOMPATIBLE`
 6. **Tạm dừng / Tiếp tục** là một nút. Chờ bước xử lý an toàn kết thúc trước khi tiếp tục; đã lưu checkpoint theo mẫu. Nếu dừng lúc chuẩn bị/tải ZIP, bước đó có thể phải tải hoặc nhập lại.
 7. **Xuất kết quả** sáng xanh khi có kết quả và app không bận. Nhấn nút, chọn thư mục **Download** trên điện thoại và lưu tên `larplarpsahur-results.zip`. Có thể xuất kết quả một phần sau tạm dừng.
 
-Dataset chạy ASR cho toàn bộ mẫu rồi mới chạy translation để hạn chế bộ nhớ model. `mt_ms` không bao gồm thời gian nạp model hay ghi kết quả. Bản 1.0.3 vẫn dùng giới hạn sinh 256 token; hiện nhánh decoder nhỏ không được chọn với giới hạn này. Không coi kiểm thử build/JVM là bằng chứng hiệu năng inference trên thiết bị.
+Dataset chạy ASR cho toàn bộ mẫu rồi mới chạy translation để hạn chế bộ nhớ model. `mt_ms` không bao gồm thời gian nạp model hay ghi kết quả. Không coi kiểm thử build/JVM là bằng chứng hiệu năng inference trên thiết bị.
+
+### 4.1. Cách dịch (từ bản 1.1.0)
+
+Bản dịch đi qua đúng đường dịch của app OnSpeak47, không gọi thẳng model như bản 1.0.x:
+
+- Ngôn ngữ nguồn đọc từ chính transcript (`ScriptLid`); nhãn của Qwen chỉ dùng khi chữ viết không đủ để kết luận.
+- Câu đã ở sẵn ngôn ngữ đích được **sao chép**, không dịch (cột `mt_copied` trong `results.csv`).
+- Số, email đọc thành lời được đổi sang dạng viết trước khi dịch; transcript dài hơn 200 ký tự được cắt theo câu, mỗi đoạn dùng ngân sách 128 token và lấy đoạn trước làm ngữ cảnh.
+
+Vì vậy điểm BLEU/CER của bản 1.0.x và 1.1.0 **không so sánh trực tiếp được**; hãy chạy lại dataset.
+
+### 4.2. Độ chính xác bản dịch
+
+Bản dịch được chấm với **bảng dịch đi kèm dataset** (file XLSX của BTC), ghép theo ID, không ghép theo thứ tự hàng:
+
+| Track | Hướng dịch | Bảng tham chiếu |
+|---|---|---|
+| VM-vi | Việt → Trung | `OneVoice_V_to_M_samples_180.xlsx`, cột `man_text` |
+| VM-zh | Trung → Việt | `OneVoice_V_to_M_samples_180.xlsx`, cột `vie_text` |
+| VE-vi | Việt → Anh | `OneVoice_V_to_E_samples_100.xlsx`, cột `Tiếng Anh - Final` |
+| EV-en | Anh → Việt | `OneVoice_E_to_V_samples_100.xlsx`, cột `Tiếng Việt (normalized)` |
+
+ZIP trên Hugging Face được chụp trước khi BTC bổ sung bảng Anh → Việt, nên ba bảng trên (lấy từ [thư mục Drive của BTC](https://drive.google.com/drive/folders/1Gm8ziMP-XwbP5Ce1InVCusy-S0uNWf62)) được đóng sẵn trong APK và dùng khi dataset không có hàng cho ID đó. Bảng nằm trong dataset luôn được ưu tiên; cột `ref_source` cho biết nguồn. Vie-Kor vẫn bị bỏ qua.
+
+Chỉ số cho mỗi track (`eval_mt_summary.csv`) và từng mẫu (`eval_mt.csv`):
+
+- `bleu`: tương thích sacreBLEU (tokenizer 13a, tiếng Trung dùng `zh`).
+- `chrf`: chrF2 theo mặc định sacreBLEU.
+- `cer`: khoảng cách sửa theo ký tự / độ dài tham chiếu.
+- `accuracy`: `100 × (1 − CER)`, không âm — tỉ lệ ký tự tham chiếu được dịch đúng.
+- `exact_match`: % mẫu khớp hoàn toàn sau chuẩn hóa.
+
+Chuẩn hóa trước khi chấm: NFC, chữ thường, bỏ dấu câu, gộp khoảng trắng (tiếng Trung bỏ hết khoảng trắng). Bảng Anh → Việt đã được BTC chuẩn hóa (chữ thường, không dấu câu, **số viết bằng chữ**), nên riêng track EV app đổi chữ số trong kết quả thành chữ trước khi so. Cách đọc số chỉ gần đúng: bảng có những cách đọc không suy ra được từ chữ số (ví dụ `sixteen forty five`), khoảng 13/100 hàng EV có số và có thể bị chấm thấp hơn thực tế.
+
+### 4.3. Chạy thư mục dataset đã có trên thiết bị
+
+Nếu muốn dùng nguyên thư mục Drive thay cho ZIP Hugging Face: tải thư mục về máy tính, đẩy vào bộ nhớ của app rồi khởi động app kèm tham số (PowerShell B, tunnel đang mở):
+
+```powershell
+adb -H 127.0.0.1 -P 5038 -s $serial push '.\Round3' '/sdcard/Android/data/com.larplarpsahur/files/datasets/Round3'
+```
+
+```powershell
+adb -H 127.0.0.1 -P 5038 -s $serial shell am start -n com.larplarpsahur/.MainActivity --ez auto_run true --es dataset_root /sdcard/Android/data/com.larplarpsahur/files/datasets/Round3
+```
+
+Tham số tùy chọn: `--es tracks VE-vi,EV-en`, `--ei limit 10` (số mẫu mỗi track), `--es mt_mode pipeline|oracle|both`, `--ez track_targets false --es target_language en`. Nên đặt tên thư mục nguồn không dấu, không khoảng trắng.
 
 Nguồn tải model:
 
@@ -151,7 +199,7 @@ adb -H 127.0.0.1 -P 5038 -s $serial shell ls /sdcard/Android/data/com.larplarpsa
 adb -H 127.0.0.1 -P 5038 -s $serial pull '/sdcard/Android/data/com.larplarpsahur/files/results/RUN_DIRECTORY' "$resultsDirectory"
 ```
 
-ZIP gồm `results.json`, `results.csv`, transcripts/translations, `eval_asr.csv`, `eval_mt.csv`, `eval_summary.json` và marker `DONE`, `CANCELLED` hoặc `FAILED`. `DONE` chỉ cho biết lượt chạy đã kết thúc; kiểm tra `error_samples` trong summary để biết mẫu lỗi. Audio/model không được đóng vào ZIP. Không có reference thì các metric tương ứng có thể là null/N/A.
+ZIP gồm `results.json`, `results.csv`, transcripts/translations, `eval_asr.csv`, `eval_mt.csv`, `eval_mt_summary.csv` (bảng độ chính xác bản dịch theo track), `eval_summary.json`, `dataset_scan.json` và marker `DONE`, `CANCELLED` hoặc `FAILED`. `DONE` chỉ cho biết lượt chạy đã kết thúc; kiểm tra `error_samples` trong summary để biết mẫu lỗi. Audio/model không được đóng vào ZIP. Không có reference thì các metric tương ứng có thể là null/N/A.
 
 ## 6. Lỗi thường gặp
 
@@ -166,8 +214,11 @@ ZIP gồm `results.json`, `results.csv`, transcripts/translations, `eval_asr.csv
 ## 7. Cấu trúc và kiểm thử
 
 - `android/`: Gradle project, mã Java, UI, pipeline và thư viện AAR.
-- `android_asr_mt_benchmark_plan.md`: kế hoạch/định dạng đánh giá.
+- `android/app/src/main/java/com/omnivoice/onspeak47/`: mã sao chép từ OnSpeak47, **không sửa tay**; cập nhật bằng `tools/sync_onspeak47.sh <thư mục OnSpeak47>`.
+- `android/app/src/main/assets/reference_tables/`: ba bảng dịch Round 3 lấy từ Drive của BTC.
+- `CLAUDE.md`: hướng dẫn làm việc với repo, định nghĩa chỉ số và danh sách việc đã làm/còn mở.
+- `android_asr_mt_benchmark_plan.md`: kế hoạch/định dạng đánh giá (§23 mô tả bản 1.1.0).
 - `checkpoint.md`: trạng thái các tác vụ triển khai.
 - `outputs/`, `work/`, model, kết quả đánh giá và cấu hình SDK cục bộ không được đưa lên Git.
 
-Bản 1.0.3 đã vượt qua assembleDebug, lintDebug và 7 unit test. Chạy kiểm thử thực tế trên SM8850 để xác minh QNN, latency và chất lượng dịch. Các model/dataset và thư viện bên thứ ba tuân theo điều khoản của nguồn cung cấp tương ứng.
+Bản 1.1.0 đã vượt qua assembleDebug, lintDebug và 60 unit test trên JVM (13 của app, 47 cho mã OnSpeak47). **Bản 1.1.0 chưa được chạy trên thiết bị**: cần kiểm thử thực tế trên SM8850 để xác minh QNN, latency và chất lượng dịch. Các model/dataset và thư viện bên thứ ba tuân theo điều khoản của nguồn cung cấp tương ứng.

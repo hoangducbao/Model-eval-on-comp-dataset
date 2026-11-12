@@ -1,6 +1,6 @@
 # Kế hoạch thiết kế: App Android benchmark ASR + MT (Qwen3-ASR + HY-MT2)
 
-> **Trạng thái:** v0.6 — triển khai larplarpsahur (2026-10-24). §22 chốt phạm vi APK hiện tại: giao diện Input/Output, model tải lần đầu, dataset Hugging Face quadata, export và giới hạn kiểm chứng. Khi khác với đề xuất cũ, §22 được ưu tiên; không triển khai qdc_build_run.py.
+> **Trạng thái:** v0.7 — bản 1.1.0 (2026-11-12), xem §23; trước đó v0.6 — triển khai larplarpsahur (2026-10-24). §22 chốt phạm vi APK hiện tại: giao diện Input/Output, model tải lần đầu, dataset Hugging Face quadata, export và giới hạn kiểm chứng. Khi khác với đề xuất cũ, §22 được ưu tiên; không triển khai qdc_build_run.py.
 > Các mục đánh dấu **[TBD]** là phần chưa rõ, hiện chỉ ghi chung chung và sẽ chi tiết hóa khi có thêm thông tin. Hai thông tin quan trọng nhất còn thiếu: **lệnh nạp dataset** và **định dạng dataset / file kết quả bắt buộc của BTC**.
 
 ---
@@ -723,6 +723,32 @@ Manifest tối thiểu (reference có thể bỏ):
 - Dừng được giữa download/decode/chunk; lời gọi QNN native đang chạy phải chờ trả về. Decoder có watchdog 60 giây không output, không hứa timeout cứng khi driver native treo.
 - JVM test/build/lint không chứng minh model hoặc driver cloud. Cần smoke test trên SM8850 và ZIP Round 3 từ quadata; không cần credential dataset.
 - Không thay đổi `qdc_build_run.py`; cung cấp APK debug đã ký để cài trực tiếp.
+
+## 23. Bản 1.1.0 (2026-11-12): đồng bộ OnSpeak47, đường dịch của app và độ chính xác bản dịch
+
+Phần này ưu tiên khi khác §17–§22. Chi tiết kỹ thuật và danh sách việc còn mở: `CLAUDE.md`; lịch sử: `checkpoint.md` Task 9–12.
+
+### 23.1 Đồng bộ mã OnSpeak47
+
+- Mã trong `com.omnivoice.onspeak47` được sao chép nguyên văn từ nhánh `hymt2+qwen3asr`, commit ghi ở `android/ONSPEAK47_UPSTREAM` (hiện `499d54e`, 2026-11-11; trước đó tương đương `c9b9950`, 2026-10-23). Cập nhật bằng `tools/sync_onspeak47.sh`; sửa đổi riêng chỉ nằm trong `tools/onspeak47-local.patch`.
+- Model không đổi (Qwen `v2.2.0-npu` REV 1, Hy-MT2 `v2.1.0-npu` REV 8).
+- Thêm thư viện JNI `htpshared` (I/O của graph NPU trong bộ nhớ dùng chung QNN HTP); build cần NDK, hoặc `-PnoHtpShared` để bỏ qua.
+
+### 23.2 Đường dịch
+
+Thay cho §22.1 ("HY-MT chia văn bản dài"): `SegmentTranslator` lặp lại `PipelineOrchestrator.translateSegmentWithDraft` của OnSpeak47 — ngôn ngữ nguồn theo `ScriptLid`, sao chép câu đã ở ngôn ngữ đích, đổi số/email sang dạng viết, đoạn ≤200 ký tự với ngân sách 128 token, đoạn trước làm ngữ cảnh. Qwen cắt audio dài hơn 18 giây tại chỗ lặng nhất trong 2 giây cuối.
+
+### 23.3 Bảng dịch và reference
+
+Thay cho §17.2 mục 5, §18.2 và §22.3 mục 5: BTC đã bổ sung `OneVoice_E_to_V_samples_100.xlsx` (sheet `Final`: `ID | Tiếng Anh (normalized) | Tiếng Việt (normalized)`), khớp 100/100 audio `EV-xxxx`. Track **EV-en nay có đủ Bảng 1 và Bảng 2**. Ba bảng V_to_M, V_to_E, E_to_V được đóng trong APK (`assets/reference_tables`) làm nguồn dự phòng cho ZIP Hugging Face cũ; vẫn chỉ ghép theo ID.
+
+### 23.4 Bảng 2 mở rộng
+
+Thêm vào §19.2: `chrf` (chrF2), `accuracy` = 100 × (1 − CER) không âm, `exact_match`, và file `eval_mt_summary.csv` (mỗi track một dòng). Reference đã chuẩn hóa (cột có chữ `normalized`) được chấm sau khi đổi chữ số thành chữ ở cả hai phía (`spell-digits-v1`); mục **[TBD]** "10 so với mười" ở §19.3 được giải quyết ở mức gần đúng cho vi/en.
+
+### 23.5 Kiểm chứng
+
+60 unit test JVM đạt; BLEU và chrF khớp sacreBLEU (sai khác < 1e-6) trên bốn cột reference thật. **Chưa chạy trên SM8850**: latency, bộ nhớ dùng chung HTP và chất lượng dịch của 1.1.0 chưa được xác minh.
 
 ## Phụ lục A: Pseudo-code metric
 

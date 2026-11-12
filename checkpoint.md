@@ -1,5 +1,37 @@
 # Checkpoint
 
+## Task 12 — Documentation and progress tracking (2026-11-12)
+- Status: complete.
+- Result: added `CLAUDE.md` (layout, commands, pipeline, metric definitions, vendoring rules, task list with open items), updated README (build requirements, translation path, EV references, new result files, running the Drive folder from device storage) and plan §23. `CLAUDE.md` "Tasks and progress" is the live list from now on; this file keeps the history.
+
+## Task 11 — Translation accuracy against the Round 3 translation tables (2026-11-12)
+- Status: complete in code and JVM tests; not run on a device.
+- Source: organisers' Drive folder "Round 3-Bộ dữ liệu mẫu" (`1Gm8ziMP-XwbP5Ce1InVCusy-S0uNWf62`). Tables: `OneVoice_V_to_E_samples_100.xlsx` (sheet Final: ID | Tiếng Việt | Tiếng Anh - Final), `OneVoice_E_to_V_samples_100.xlsx` (sheet Final: ID | Tiếng Anh (normalized) | Tiếng Việt (normalized)), `OneVoice_V_to_M_samples_180.xlsx` (sheet Samples: id | vie_text | man_text | paths), `OneVoice_V_to_K_samples_180.xlsx` (out of scope). Every table ID has its audio file and vice versa (100/100, 100/100, 180/180 ×2).
+- Finding: the E→V table is new. The pinned Hugging Face ZIP (snapshot of 2026-10-24) has a copy of the V→E table in the Eng-Vie folder, which is why EV-en had no reference in 1.0.x. The E→V table is normalized text: lowercase, no punctuation, numbers spelled out; 13 of 100 rows contain numbers, several with readings that cannot be derived from digits.
+- Implementation: `DatasetScanner` matches text columns by header prefix (so `Tiếng Anh (normalized)` etc. are found), no longer excludes EV from table joins, and falls back to the tables bundled in `assets/reference_tables` (SHA-256 `b7088a1d…` E_to_V, `66794c82…` V_to_E, `b0b9f1ba…` V_to_M) for IDs the dataset has no row for. Join stays ID-only. Samples carry `ref_source` (sidecar / dataset_table / bundled_table / manifest / none) and `ref_normalized`.
+- Metrics added: chrF2 (sacreBLEU defaults), character accuracy `100*(1-CER)` floored at 0, exact match after normalization, alongside the existing BLEU and CER. Normalized-table samples are scored with digits spelled out and symbols dropped (`Numbers`, profile `spell-digits-v1`) for both ASR (WER/CER) and MT.
+- Output: `eval_mt.csv` gains accuracy, sent_chrf, exact_match, chrf, samples, ref_source; new `eval_mt_summary.csv` (one row per track and MT input); `eval_summary.json` records the chrF signature and accuracy definition; the completion message lists ASR CER/WER and one translation line per track.
+- Verification: BLEU and chrF match sacreBLEU to 1e-6 on all four reference columns of the real tables with synthetic hypotheses (`TranslationAccuracyTest`). First attempt at chrF was off by 0.06 on Chinese: sacreBLEU does not count hypothesis n-grams of an order the reference is too short for; fixed.
+- Limits: number spelling is plain cardinals (+ clock split, thousands groups, decimals); numeric EV rows remain approximate. Hugging Face CDN was not reachable from the work environment, so the pinned ZIP's own tables were not compared byte-for-byte with the Drive ones.
+
+## Task 10 — Integrate OnSpeak47's translation path (2026-11-12)
+- Status: complete in code and JVM tests; not run on a device.
+- Before: `PipelineRunner` called `HyMtOnnxModule.translateSentenceWithBudget` directly on 180-character chunks with a 256-token budget, source language = Qwen's tag.
+- Now: `SegmentTranslator` (local file in the vendored package) reproduces `PipelineOrchestrator.translateSegmentWithDraft` without drafts/TTS: `ScriptLid.label` decides the source language from the transcript, a row already in the target language is copied, a mixed row is prompted from its minority language, `lowerEnglish` + `writtenForm` (+ `viMtForm` for Vietnamese) shape the input, and `TranslationModule.translateWithDraft` decodes with `AsrState.COMMIT_MT_MAX_TOKENS` (128; 256 only for a single sentence over 200 chars). Transcripts over 200 chars are packed by sentence, and each segment gets the previous one as forced-prefix context, as upstream does between commits of a session.
+- ASR side: `QwenFileRecognizer` keeps two forms of the transcript — as written (`asr_hyp`, scored) and in the app's script convention (`asr_routed`, English words uppercase, which is what `ScriptLid` reads). Oracle mode applies the same convention to the reference transcript using its known language. Audio over 18 s is cut at the quietest 100 ms of the last 2 s instead of at a fixed sample.
+- A paused translation returns partial text from the NPU decoder; the runner re-checks cancellation and never stores it.
+- New per-sample fields: `asr_routed`, `mt_src_lang`, `mt_segments`, `mt_copied`; run config records `onspeak47_commit` and `translation_path`.
+- Consequence: scores from 1.0.x and 1.1.0 are not comparable without re-running; the token budget change should also let short prompts decode on the AR1 256-slot graph (Task 7 finding). Neither is measured yet.
+
+## Task 9 — Sync vendored OnSpeak47 code to upstream `499d54e` (2026-11-12)
+- Status: complete; builds and passes JVM tests; not run on a device.
+- Finding: vendored files matched upstream `c9b9950` (2026-10-23; `HyMtNpuDecoder` `9040143`, `HyMtOnnxModule` `4cb9a81`) with three local edits. Upstream branch `hymt2+qwen3asr` is at `499d54ee` (2026-11-11). Model releases and REVs are unchanged (`v2.2.0-npu` Qwen REV 1, `v2.1.0-npu` Hy-MT2 REV 8): no change to `ModelRepository`.
+- Method: `tools/sync_onspeak47.sh <checkout>` copies 19 main files, 5 JNI files and 5 test classes verbatim, applies `tools/onspeak47-local.patch`, and writes `android/ONSPEAK47_UPSTREAM`. Local edits are now two hunks: `QwenAsrNpuEngine.transcribeFileBlock` and not closing the shared `OrtEnvironment` in `HyMtOnnxModule.close`. The earlier edit that stripped glossary/Tatoeba from the prompt is gone: `Glossary`, `TatoebaText`, `TatoebaAssist` and `TranslationModule` are vendored instead and stay inert (empty glossary, no database).
+- What the sync brings: NPU graph I/O in QNN HTP shared memory (`HtpShared` JNI + `NpuGraph`, falls back to direct buffers when the library is missing), `LoopGuard` on the decode loop, MT forced-prefix context, UTF-8/newline cleanup of MT output, email preservation, the full `ScriptLid`, Qwen streaming fixes (dropped audio before the 20 s cut, name lock, quiet cut), `cool_run` HTP performance mode.
+- Build: `externalNativeBuild` (NDK 28.2.13676358, CMake 3.22.1) builds `libhtpshared.so`; `-PnoHtpShared` skips it. `unitTests.returnDefaultValues = true` for the vendored tests. Version 1.1.0 (versionCode 5).
+- Verification (Linux, JDK 21, Gradle 9.5.1 wrapper): `:app:assembleDebug :app:testDebugUnitTest :app:lintDebug` succeeded; 60 tests, 0 failures, 0 skipped with `-PhymtTokenizer` (5 BPE golden tests skip without it). APK 43,001,443 bytes, contains `lib/arm64-v8a/libhtpshared.so` and `assets/reference_tables/*.xlsx`. APK not published; build locally.
+- Not done: no SM8850 run, so shared-memory I/O, latency and translation quality of 1.1.0 are unverified.
+
 ## Task 8 — Publish GitHub repository and usage guide (2026-10-24)
 - Status: complete.
 - Scope: create private GitHub repository Model-eval-on-comp-dataset and Vietnamese README covering APK build, installation, QDC SSH setup, dataset processing and results retrieval.
