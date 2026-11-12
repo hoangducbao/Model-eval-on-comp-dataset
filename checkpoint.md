@@ -1,5 +1,15 @@
 # Checkpoint
 
+## Task 13 — Evaluate the first 1.1.0 device run (2026-11-12)
+- Status: complete. Report: `reports/2026-11-12-quadata-v1.1.0.md`; script: `tools/rescore_results.py`.
+- Input: `larplarpsahur-results.zip` from QDC ("Canoe for arm64", SM8850), app 1.1.0, upstream `499d54ee`, quadata `fed18c73`, `mt_mode=pipeline`, track targets on. 560 samples (VE-vi 100, VM-vi 180, VM-zh 180, EV-en 100), DONE, 0 errors, 539.8 s wall-clock for 2,124 s of audio. EV references came from the bundled E→V table (100/100).
+- Metric check: sacreBLEU 2.x on the app's normalised strings reproduces the app's corpus BLEU and chrF for VE-vi, VM-vi and VM-zh to all printed digits; EV differs by 0.6 BLEU because the script's number spelling also says "giờ" for clock times.
+- ASR: app CER VE-vi 1.71 %, VM-vi 13.57 %, VM-zh 3.89 %, EV-en 6.49 %. Format-neutral (digits, 她/他, 的/得/地, fillers, contractions) and without four truncated references: 1.27 %, 8.05 %, 0.51 %, 5.85 % (all 5.41 %). Language tags 558/560 right; EV-2748 produced an empty transcript.
+- MT: app BLEU/chrF VE 31.8/56.2, VM-vi 33.7/34.0 (Chinese target), VM-zh 34.4/59.4, EV 30.1/54.1. Sentences with a correct transcript score 6.9–12.1 BLEU higher than those with ASR errors. Hand spot check of 48 random samples with correct ASR: 41 correct or acceptable, 4 translation errors, 3 broken by one-letter ASR slips.
+- Main findings: *anh/chị* = "you" translated as he/she in 8/16 VE sentences; 22/33 VM-zh sentences about a woman translated as male because the ASR writes 他 for *tā*; one hallucinated entity (越南 → Thái Lan, VM-1730). Dataset: 4 truncated `vie_text` rows (30 % of VM-vi ASR edits), one vi/zh mismatch (VM-4999), spoken-style E→V references.
+- Speed: ASR median 247–449 ms per sample (real-time factor 0.08–0.10), MT median 340–930 ms; model load 0.7 s + 1.2 s.
+- Not done: logcat was not provided, so `HtpShared` / MT-context log lines are unverified; no oracle (`mt_mode=both`) run yet.
+
 ## Task 12 — Documentation and progress tracking (2026-11-12)
 - Status: complete.
 - Result: added `CLAUDE.md` (layout, commands, pipeline, metric definitions, vendoring rules, task list with open items), updated README (build requirements, translation path, EV references, new result files, running the Drive folder from device storage) and plan §23. `CLAUDE.md` "Tasks and progress" is the live list from now on; this file keeps the history.

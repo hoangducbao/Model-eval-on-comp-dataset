@@ -30,6 +30,8 @@ downloaded by the app on first launch.
 | `android/app/src/test/java/` | JVM unit tests: `com/larplarpsahur` (ours) and `com/omnivoice/onspeak47` (vendored upstream tests + `SegmentTranslatorTest`). |
 | `android/ONSPEAK47_UPSTREAM` | Upstream repo, branch and commit the vendored files were copied from. Read by `build.gradle` into `BuildConfig.ONSPEAK47_COMMIT`. |
 | `tools/sync_onspeak47.sh`, `tools/onspeak47-local.patch` | Re-vendoring script and the only local edits allowed inside vendored files. |
+| `tools/rescore_results.py` | PC-side re-scoring of an exported `results.json` (sacreBLEU check, format-neutral ASR view, ASR→MT split). Needs `pip install sacrebleu`. |
+| `reports/` | Evaluation write-ups of device runs (Markdown). Raw result ZIPs are not committed. |
 | `README.md` | User guide in Vietnamese (build, QDC SSH tunnel, running, pulling results). |
 | `android_asr_mt_benchmark_plan.md` | Design plan in Vietnamese; §22–§23 describe what is actually implemented. |
 | `checkpoint.md` | Task-by-task history, newest first. |
@@ -181,17 +183,33 @@ Status as of 2026-11-12, app version **1.1.0** (versionCode 5), upstream `499d54
 - [x] **Build.** `assembleDebug` produces a 43 MB arm64 APK containing `libhtpshared.so` and the
   bundled tables; `lintDebug` passes.
 - [x] **Docs.** This file, `checkpoint.md` Tasks 9–12, README, plan §23.
+- [x] **First device run of 1.1.0** (QDC SM8850, 2026-11-12): 560/560 samples, 0 errors, 9.0 min
+  for 35.4 min of audio. Evaluated in `reports/2026-11-12-quadata-v1.1.0.md` (checkpoint Task 13).
+  App BLEU/chrF match sacreBLEU exactly on VE/VM tracks. Format-neutral ASR CER: zh 0.5 %,
+  VE-vi 1.3 %, EV-en 5.9 %, VM-vi 8.1 %; translation BLEU 31–38, chrF 55–61 (35 into Chinese).
 
 ### Not verified / open
 
-- [ ] **On-device run of 1.1.0.** Nothing in this round ran on an SM8850. To confirm on QDC:
-  logcat `HtpShared` should print `NPU graph I/O in HTP shared memory`; `HyMtOnnxModule` should
-  show `mt context:` lines only for multi-segment audio; compare `asr_ms` / `mt_ms` and the
-  metric tables with a 1.0.3 run of the same dataset.
+- [ ] **Logcat checks of 1.1.0.** The device run worked end to end, but its logcat was not
+  captured: `HtpShared` should print `NPU graph I/O in HTP shared memory`, and `HyMtOnnxModule`
+  should show `mt context:` lines only for multi-segment audio (none in Round 3: every
+  transcript was one segment).
+- [ ] **Oracle run.** Run the dataset with `mt_mode=both` to measure translation on reference
+  transcripts and separate it from ASR errors (report §4.2, §7.1).
+- [ ] **Dataset defects.** Report to the organisers: VM-5201, VM-0383, VM-1989, VM-5942 have a
+  truncated `vie_text`; VM-4999 vi/zh texts disagree; VM-3528, VM-7215, VM-7149 audio may not
+  match the text. `tools/rescore_results.py` excludes the four truncated rows in its clean view.
+- [ ] **Format-neutral ASR score in the app.** Strict CER counts 她/他, 得/的, erhua 儿, digits vs
+  words and English fillers/contractions as errors (zh strict 3.9 % vs 0.5 %). Port the lenient
+  profile of `tools/rescore_results.py` into `Metrics` as a second column.
+- [ ] **Pronoun errors upstream.** Hy-MT2 translated Vietnamese *anh/chị* = "you" as he/she in
+  8 of 16 VE sentences. Raise with OnSpeak47 (prompt or context); do not patch locally.
+- [ ] **EV-2748 empty transcript** (only hard ASR failure); listen to the clip. Also listen to the
+  ~12 VM-vi clips with garbled ASR listed in the report §3.2.
+- [ ] **`Numbers` reads "5:30" without "giờ"** for Vietnamese; align with the rescoring script.
 - [ ] **Compare 1.0.3 vs 1.1.0 scores.** The translation path changed (script-based source
   language, copies, written-form input, budget), so BLEU/CER are not comparable across versions
-  without re-running. Check `mt_copied` > 0 rows by hand: a copy means `ScriptLid` judged the
-  transcript to be in the target language already.
+  without re-running 1.0.3 on the same set. (In the 1.1.0 run the copy rule never fired.)
 - [ ] **Number spelling coverage.** Decide with real EV output whether clock times, years read
   in pairs and digit-by-digit codes need rules, or whether numeric rows should be reported
   separately.
