@@ -5,22 +5,33 @@ import org.json.*;
 import java.io.*;
 import java.util.*;
 
-/** Round 3 joins are by ID only. EV references are never inferred from the copied VE table. */
+/**
+ * Round 3 joins are by ID only, never by row order. References come from, in this order:
+ * sidecar .txt files, the XLSX tables inside the dataset, then the translation tables bundled
+ * with the app (Drive snapshot, assets/reference_tables) for IDs the dataset has no row for —
+ * the pinned Hugging Face ZIP predates the E_to_V table, so its EV audio is scored that way.
+ */
 public final class DatasetScanner {
     public static final class Sample {
         public String id,audio,track="manual",sourceLanguage="und",targetLanguage;
         public String referenceTranscript,referenceTranslation;
+        /** Where the translation reference came from: dataset_table, sidecar, bundled_table or none. */
+        public String referenceSource="none";
+        /** The reference table is normalized text (lowercase, no punctuation, numbers in words). */
+        public boolean referenceNormalized;
         public Sample(String id,String audio) { this.id=id;this.audio=audio; }
         public JSONObject json() throws Exception {
             return new JSONObject().put("id",id).put("audio",audio).put("track",track)
                 .put("src_lang",sourceLanguage).put("tgt_lang",targetLanguage)
                 .put("ref_text",referenceTranscript==null?JSONObject.NULL:referenceTranscript)
-                .put("ref_trans",referenceTranslation==null?JSONObject.NULL:referenceTranslation);
+                .put("ref_trans",referenceTranslation==null?JSONObject.NULL:referenceTranslation)
+                .put("ref_source",referenceSource).put("ref_normalized",referenceNormalized);
         }
         public static Sample from(JSONObject o) {
             Sample s=new Sample(o.optString("id"),o.optString("audio"));s.track=o.optString("track","manual");
             s.sourceLanguage=o.optString("src_lang","und");s.targetLanguage=nullable(o,"tgt_lang");
-            s.referenceTranscript=nullable(o,"ref_text");s.referenceTranslation=nullable(o,"ref_trans");return s;
+            s.referenceTranscript=nullable(o,"ref_text");s.referenceTranslation=nullable(o,"ref_trans");
+            s.referenceSource=o.optString("ref_source","none");s.referenceNormalized=o.optBoolean("ref_normalized");return s;
         }
     }
     public static final class Scan {
@@ -28,6 +39,10 @@ public final class DatasetScanner {
         public final JSONObject report=new JSONObject();
     }
     public static Scan scan(File root,String target,boolean trackTargets,String tracks,int limit) throws Exception {
+        return scan(root,target,trackTargets,tracks,limit,null);
+    }
+    /** @param bundledTables directory of fallback XLSX reference tables, or null */
+    public static Scan scan(File root,String target,boolean trackTargets,String tracks,int limit,File bundledTables) throws Exception {
         if(!root.isDirectory()) throw new IOException("Dataset directory unavailable");
         List<File> files=new ArrayList<>();collect(root,root,files,0);
         List<File> manifests=new ArrayList<>();
@@ -45,22 +60,15 @@ public final class DatasetScanner {
                 s.targetLanguage=trackTargets?r.optString("tgt_lang",r.optString("target_language",target)):target;
                 s.referenceTranscript=nullable(r,"ref_text");s.referenceTranslation=nullable(r,"ref_trans");
                 if(s.referenceTranslation==null) s.referenceTranslation=nullable(r,"ref_translation");
+                s.referenceNormalized=r.optBoolean("ref_normalized");if(s.referenceTranslation!=null)s.referenceSource="manifest";
                 scan.samples.add(s);
             }
         } else {
             Map<File,Map<String,Map<String,String>>> tables=new HashMap<>();
-            for(File f:files) if(f.getName().toLowerCase(Locale.ROOT).endsWith(".xlsx")) {
-                try {
-                    Map<String,Map<String,String>> table=tables.computeIfAbsent(f.getParentFile(),x->new HashMap<>());
-                    for(Map<String,String> row:XlsxReader.read(f)) {
-                        String id=row.getOrDefault("id","").trim().toUpperCase(Locale.ROOT);
-                        if(!id.isEmpty()) {
-                            if(table.containsKey(id)&&!table.get(id).equals(row)) throw new IOException("Conflicting XLSX reference ID "+id);
-                            table.put(id,row);
-                        }
-                    }
-                } catch(Exception e) { throw new IOException("Cannot read references in "+f.getName()+": "+Io.error(e),e); }
-            }
+            for(File f:files) if(f.getName().toLowerCase(Locale.ROOT).endsWith(".xlsx")) load(f,tables.computeIfAbsent(f.getParentFile(),x->new HashMap<>()));
+            Map<String,Map<String,String>> bundled=new HashMap<>();
+            File[] extra=bundledTables==null?null:bundledTables.listFiles();
+            if(extra!=null) { Arrays.sort(extra);for(File f:extra) if(f.getName().toLowerCase(Locale.ROOT).endsWith(".xlsx")) load(f,bundled); }
             for(File audio:files) if(isAudio(audio)) {
                 String id=stem(audio.getName()),upper=id.toUpperCase(Locale.ROOT);
                 if(upper.startsWith("VK")) continue;
@@ -73,24 +81,31 @@ public final class DatasetScanner {
                     referenceTarget=zh?"vi":"zh";if(trackTargets)s.targetLanguage=referenceTarget;
                 } else if(upper.startsWith("VE")) { s.track="VE-vi";s.sourceLanguage="vi";referenceTarget="en";if(trackTargets)s.targetLanguage="en"; }
                 else if(upper.startsWith("EV")) { s.track="EV-en";s.sourceLanguage="en";referenceTarget="vi";if(trackTargets)s.targetLanguage="vi"; }
-                Map<String,String> row=null;
+                Map<String,String> row=null;String rowSource="dataset_table";
                 for(File parent=audio.getParentFile();parent!=null&&inside(root,parent);parent=parent.getParentFile()) {
                     Map<String,Map<String,String>> table=tables.get(parent);
                     if(table!=null&&table.containsKey(upper)) { row=table.get(upper);break; }
                 }
-                if(!upper.startsWith("EV")) {
-                    s.referenceTranscript=sidecar(audio,s.sourceLanguage,id,true);
-                    if(s.referenceTranscript==null&&row!=null)s.referenceTranscript=column(row,s.sourceLanguage);
-                    if(referenceTarget.equals(s.targetLanguage)) {
-                        if(row!=null)s.referenceTranslation=column(row,s.targetLanguage);
-                        if(s.referenceTranslation==null)s.referenceTranslation=sidecar(audio,s.targetLanguage,id,false);
-                    } else warnings.put(rel+": target override differs from reference language; MT metrics disabled");
-                }
+                if(row==null&&bundled.containsKey(upper)) { row=bundled.get(upper);rowSource="bundled_table"; }
+                // EV audio has no sidecar text in Round 3; a .txt next to it is not trusted as a reference.
+                boolean sidecars=!upper.startsWith("EV");
+                if(sidecars)s.referenceTranscript=sidecar(audio,s.sourceLanguage,id,true);
+                if(s.referenceTranscript==null&&row!=null) { s.referenceTranscript=column(row,s.sourceLanguage);s.referenceNormalized|=s.referenceTranscript!=null&&normalized(row,s.sourceLanguage); }
+                if(referenceTarget.equals(s.targetLanguage)) {
+                    if(row!=null) {
+                        s.referenceTranslation=column(row,s.targetLanguage);
+                        if(s.referenceTranslation!=null) { s.referenceSource=rowSource;s.referenceNormalized|=normalized(row,s.targetLanguage); }
+                    }
+                    if(s.referenceTranslation==null&&sidecars) {
+                        s.referenceTranslation=sidecar(audio,s.targetLanguage,id,false);
+                        if(s.referenceTranslation!=null)s.referenceSource="sidecar";
+                    }
+                } else warnings.put(rel+": target override differs from reference language; MT metrics disabled");
                 scan.samples.add(s);
             }
         }
         Set<String> selected=new HashSet<>(Arrays.asList(tracks==null||tracks.trim().isEmpty()?new String[0]:tracks.split(",")));
-        Map<String,Integer> counts=new TreeMap<>();Set<String> identities=new HashSet<>();JSONArray unmatched=new JSONArray();
+        Map<String,Integer> counts=new TreeMap<>(),sources=new TreeMap<>();Set<String> identities=new HashSet<>();JSONArray unmatched=new JSONArray();
         Iterator<Sample> iterator=scan.samples.iterator();
         while(iterator.hasNext()) {
             Sample s=iterator.next();
@@ -99,11 +114,12 @@ public final class DatasetScanner {
             int count=counts.getOrDefault(s.track,0);
             if(limit>0&&count>=limit) { iterator.remove();continue; }
             if(!identities.add(s.track+":"+s.id))throw new IOException("Duplicate sample ID within track: "+s.track+"/"+s.id);
-            counts.put(s.track,count+1);
+            counts.put(s.track,count+1);sources.merge(s.track+"/"+s.referenceSource,1,Integer::sum);
             if(s.referenceTranscript==null||s.referenceTranslation==null)unmatched.put(s.track+"/"+s.id);
         }
         if(scan.samples.isEmpty())throw new IOException("No supported audio after filtering");
-        scan.report.put("root",root.getAbsolutePath()).put("counts",new JSONObject(counts)).put("unmatched",unmatched).put("warnings",warnings).put("pairing","id_only; no order fallback; EV has no reference");
+        scan.report.put("root",root.getAbsolutePath()).put("counts",new JSONObject(counts)).put("unmatched",unmatched).put("warnings",warnings)
+            .put("reference_sources",new JSONObject(sources)).put("pairing","id_only; no order fallback; bundled tables fill IDs the dataset has no row for");
         return scan;
     }
     private static boolean inside(File root,File f) throws IOException {
@@ -128,10 +144,24 @@ public final class DatasetScanner {
         if(parent!=null)paths.add(new File(parent,folder+"/"+id+".txt"));
         for(File f:paths)if(f.isFile())return Io.read(f,1024*1024).trim();return null;
     }
-    private static String column(Map<String,String> row,String lang) {
-        String[] names="vi".equals(lang)?new String[]{"vie_text","tiếng việt"}:"zh".equals(lang)?new String[]{"man_text"}:new String[]{"tiếng anh - final","eng_text"};
-        for(String n:names)if(row.containsKey(n)&&!row.get(n).trim().isEmpty())return row.get(n).trim();return null;
+    private static void load(File f,Map<String,Map<String,String>> table) throws IOException {
+        try {
+            for(Map<String,String> row:XlsxReader.read(f)) {
+                String id=row.getOrDefault("id","").trim().toUpperCase(Locale.ROOT);
+                if(id.isEmpty())continue;
+                if(table.containsKey(id)&&!table.get(id).equals(row)) throw new IOException("Conflicting XLSX reference ID "+id);
+                table.put(id,row);
+            }
+        } catch(Exception e) { throw new IOException("Cannot read references in "+f.getName()+": "+Io.error(e),e); }
     }
+    /** Header of the row's text column for a language: vie_text, "Tiếng Việt", "Tiếng Anh (normalized)"… */
+    private static String header(Map<String,String> row,String lang) {
+        String[] names="vi".equals(lang)?new String[]{"vie_text","tiếng việt"}:"zh".equals(lang)?new String[]{"man_text","tiếng trung"}:new String[]{"eng_text","tiếng anh"};
+        for(String n:names)for(String key:row.keySet())if(key.trim().startsWith(n)&&!row.get(key).trim().isEmpty())return key;
+        return null;
+    }
+    private static String column(Map<String,String> row,String lang) { String key=header(row,lang);return key==null?null:row.get(key).trim(); }
+    private static boolean normalized(Map<String,String> row,String lang) { String key=header(row,lang);return key!=null&&key.contains("normalized"); }
     private static String nullable(JSONObject o,String key) { if(o.isNull(key))return null;String s=o.optString(key,"").trim();return s.isEmpty()?null:s; }
     private static String stem(String name) { int dot=name.lastIndexOf('.');return dot<0?name:name.substring(0,dot); }
     public static boolean isAudio(File f) { return f.getName().toLowerCase(Locale.ROOT).matches(".*\\.(wav|mp3|m4a|aac|flac|ogg)$"); }

@@ -161,7 +161,7 @@ public final class WorkService extends Service {
                 root=new File(path);
             }
             Io.check(cancelled::get);progress(-1,"Đang ghép audio với reference theo ID…");
-            scan=DatasetScanner.scan(root,target,request.getBooleanExtra("track_targets",true),request.getStringExtra("tracks"),request.getIntExtra("limit",0));
+            scan=DatasetScanner.scan(root,target,request.getBooleanExtra("track_targets",true),request.getStringExtra("tracks"),request.getIntExtra("limit",0),referenceTables());
             input=(DATASET.equals(action)?"Hugging Face: Echdipi/quadata\n":"Dataset: ")+root.getName()+"\n"+scan.samples.size()+" audio";
         } else if(RUN.equals(action)) {
             ArrayList<String> uris=request.getStringArrayListExtra("uris");
@@ -204,6 +204,7 @@ public final class WorkService extends Service {
             .put("created_at_ms",System.currentTimeMillis()).put("app_version",BuildConfig.VERSION_NAME)
             .put("device",Build.MODEL).put("soc",Build.VERSION.SDK_INT>=31?Build.SOC_MODEL:"unknown");
         if(DATASET.equals(action)) config.put("dataset_page",DatasetDownloader.DATASET_PAGE).put("dataset_revision",DatasetDownloader.REVISION);
+        config.put("onspeak47_commit",BuildConfig.ONSPEAK47_COMMIT).put("translation_path","onspeak47-segment-v1");
         resetLivePanels();
         ResultExporter store=new ResultExporter(directory,config);
         Io.atomic(new File(directory,"dataset_scan.json"),scan.report.toString(2));
@@ -245,6 +246,19 @@ public final class WorkService extends Service {
             }
         },cancelled::get);
         progress(100,summary+"\n"+store.directory);
+    }
+    /** Round 3 translation tables shipped in the APK, unpacked for IDs the dataset has no row for. */
+    private File referenceTables() throws IOException {
+        File directory=new File(getCacheDir(),"reference_tables");Io.mkdir(directory);
+        String[] names=getAssets().list("reference_tables");
+        if(names!=null)for(String name:names) {
+            File part=new File(directory,name+".tmp");
+            try(InputStream in=getAssets().open("reference_tables/"+name);OutputStream out=new FileOutputStream(part)) {
+                byte[] b=new byte[65536];int n;while((n=in.read(b))!=-1)out.write(b,0,n);
+            }
+            Io.move(part,new File(directory,name));
+        }
+        return directory;
     }
     private void resetLivePanels() {
         asrText="";translationText="";sourceLanguage="und";currentFile="";asrMillis=-1;translationMillis=-1;stage="preparing";

@@ -2,19 +2,22 @@
 
 Ứng dụng Android **larplarpsahur** đánh giá pipeline **Qwen ASR → HY-MT translation** trên audio riêng lẻ hoặc dataset Qualcomm Round 3 (`Echdipi/quadata`). ASR tự nhận diện ngôn ngữ nguồn; audio riêng lẻ cho phép chọn tiếng Việt, English hoặc 中文 làm ngôn ngữ dịch.
 
+**Phiên bản hiện tại: 1.2.0** (OnSpeak47 nhánh `hymt2-125bit`, commit `18f28fb`). Kết quả đánh giá lượt chạy trên thiết bị: [`reports/`](reports/). Lịch sử thay đổi: [`checkpoint.md`](checkpoint.md).
+
 ## 1. Chuẩn bị
 
 - Windows PowerShell, Git, JDK 21 và Android SDK Platform 34 cùng Build Tools/Platform Tools tương thích Gradle của dự án. Có thể cài SDK bằng Android Studio.
+- Từ bản 1.1.0: **NDK 28.2.13676358** và **CMake 3.22.1** (SDK Manager › SDK Tools) để build thư viện `libhtpshared.so` (bộ nhớ dùng chung với NPU, lấy từ OnSpeak47). Nếu không cài NDK, thêm `-PnoHtpShared` vào lệnh Gradle: app vẫn chạy đúng nhưng mỗi token chậm hơn.
 - `java`, `adb` và `ssh` có trong PATH; kiểm tra bằng `java -version`, `adb version`, `ssh -V`.
 - APK chỉ chứa ABI `arm64-v8a`, Android tối thiểu API 27. **Chạy inference NPU cần thiết bị SM8850, Android 12+ và driver QNN tương thích**; không đảm bảo chạy trên mọi điện thoại/emulator.
 - Internet và dung lượng trống cho model khoảng 1,85 GB, ZIP dataset khoảng 93 MB, dữ liệu giải nén và kết quả.
 - Tài khoản Qualcomm Device Cloud (QDC), session còn hoạt động và tùy chọn SSH tunnel nếu cần điều khiển từ máy tính.
 
-Repo có thư viện sherpa-onnx AAR trong `android/app/libs/`; model được tải riêng khi mở app lần đầu. Không cần `qdc_build_run.py`.
+Model được tải riêng khi mở app lần đầu. Không cần `qdc_build_run.py`. Mã ASR/dịch trong `com.onspeak47` được sao chép từ [OnSpeak47](https://github.com/DS-PNQ/OnSpeak47) nhánh `hymt2-125bit` (từ bản 1.2.0; trước đó `hymt2+qwen3asr`); commit đang dùng ghi trong `android/ONSPEAK47_UPSTREAM`.
 
 ## 2. Clone, build và xuất APK
 
-Repo riêng tư: đăng nhập GitHub trước khi clone, ví dụ `gh auth login`.
+Repo riêng tư: đăng nhập GitHub trước khi clone, ví dụ `gh auth login`. Nếu đã clone trước đó, chỉ cần cập nhật: `git -C <thư mục repo> pull` (nhánh `main`).
 
 ```powershell
 git clone https://github.com/hoangducbao/Model-eval-on-comp-dataset.git
@@ -29,13 +32,15 @@ $env:Path = "$env:JAVA_HOME\bin;$env:ANDROID_HOME\platform-tools;$env:Path"
 if ($LASTEXITCODE -ne 0) { throw 'Build hoặc kiểm thử thất bại.' }
 
 New-Item -ItemType Directory -Path ..\outputs -Force | Out-Null
-Copy-Item .\app\build\outputs\apk\debug\app-debug.apk ..\outputs\larplarpsahur-debug.apk
-Get-FileHash ..\outputs\larplarpsahur-debug.apk -Algorithm SHA256
+Copy-Item .\app\build\outputs\apk\debug\app-debug.apk ..\outputs\larplarpsahur-1.2.0-debug.apk
+Get-FileHash ..\outputs\larplarpsahur-1.2.0-debug.apk -Algorithm SHA256
 ```
 
 APK gốc: `android/app/build/outputs/apk/debug/app-debug.apk`. Đây là APK debug để thử nghiệm cloud device, không phải bản ký phát hành lên Play Store. `android/local.properties` là cấu hình riêng của máy, không được commit; nếu file này tồn tại, đảm bảo `sdk.dir` trỏ đúng SDK.
 
 Có thể upload APK qua giao diện cài ứng dụng của QDC, hoặc dùng `adb install` sau khi mở tunnel ở bước tiếp theo.
+
+Mỗi máy ký APK debug bằng key riêng, nên SHA-256 khác nhau giữa các máy. Nếu điện thoại QDC còn bản do máy khác build, cài đè sẽ báo `INSTALL_FAILED_UPDATE_INCOMPATIBLE`: xuất kết quả trước, rồi `adb -H 127.0.0.1 -P 5038 -s $serial uninstall com.larplarpsahur` (gỡ app cũng xóa model đã tải, app sẽ tải lại khoảng 1,85 GB).
 
 ## 3. SSH tunnel QDC
 
@@ -113,7 +118,56 @@ Nếu cài bản build từ máy khác báo `INSTALL_FAILED_UPDATE_INCOMPATIBLE`
 6. **Tạm dừng / Tiếp tục** là một nút. Chờ bước xử lý an toàn kết thúc trước khi tiếp tục; đã lưu checkpoint theo mẫu. Nếu dừng lúc chuẩn bị/tải ZIP, bước đó có thể phải tải hoặc nhập lại.
 7. **Xuất kết quả** sáng xanh khi có kết quả và app không bận. Nhấn nút, chọn thư mục **Download** trên điện thoại và lưu tên `larplarpsahur-results.zip`. Có thể xuất kết quả một phần sau tạm dừng.
 
-Dataset chạy ASR cho toàn bộ mẫu rồi mới chạy translation để hạn chế bộ nhớ model. `mt_ms` không bao gồm thời gian nạp model hay ghi kết quả. Bản 1.0.3 vẫn dùng giới hạn sinh 256 token; hiện nhánh decoder nhỏ không được chọn với giới hạn này. Không coi kiểm thử build/JVM là bằng chứng hiệu năng inference trên thiết bị.
+Dataset chạy ASR cho toàn bộ mẫu rồi mới chạy translation để hạn chế bộ nhớ model. `mt_ms` không bao gồm thời gian nạp model hay ghi kết quả. Không coi kiểm thử build/JVM là bằng chứng hiệu năng inference trên thiết bị.
+
+### 4.1. Cách dịch (từ bản 1.1.0)
+
+Bản dịch đi qua đúng đường dịch của app OnSpeak47, không gọi thẳng model như bản 1.0.x:
+
+- Ngôn ngữ nguồn đọc từ chính transcript (`ScriptLid`); nhãn của Qwen chỉ dùng khi chữ viết không đủ để kết luận.
+- Câu đã ở sẵn ngôn ngữ đích được **sao chép**, không dịch (cột `mt_copied` trong `results.csv`).
+- Số, email đọc thành lời được đổi sang dạng viết trước khi dịch; transcript dài hơn 200 ký tự được cắt theo câu, mỗi đoạn dùng ngân sách 128 token và lấy đoạn trước làm ngữ cảnh.
+
+Từ bản 1.2.0 (OnSpeak47 nhánh `hymt2-125bit`): câu nguồn tiếng Việt luôn kèm một câu chào mẫu làm ngữ cảnh để model hiểu *anh/chị* là "you" chứ không phải "he/she"; với tiếng Trung, 他 được đổi thành 她 khi trước đó có từ chỉ nữ giới (chị, mẹ, con gái…). Cột `mt_in` trong `results.csv` là đúng câu đã đưa vào model dịch.
+
+Vì vậy điểm BLEU/CER của bản 1.0.x và 1.1.0 **không so sánh trực tiếp được**; hãy chạy lại dataset.
+
+### 4.2. Độ chính xác bản dịch
+
+Bản dịch được chấm với **bảng dịch đi kèm dataset** (file XLSX của BTC), ghép theo ID, không ghép theo thứ tự hàng:
+
+| Track | Hướng dịch | Bảng tham chiếu |
+|---|---|---|
+| VM-vi | Việt → Trung | `OneVoice_V_to_M_samples_180.xlsx`, cột `man_text` |
+| VM-zh | Trung → Việt | `OneVoice_V_to_M_samples_180.xlsx`, cột `vie_text` |
+| VE-vi | Việt → Anh | `OneVoice_V_to_E_samples_100.xlsx`, cột `Tiếng Anh - Final` |
+| EV-en | Anh → Việt | `OneVoice_E_to_V_samples_100.xlsx`, cột `Tiếng Việt (normalized)` |
+
+ZIP trên Hugging Face được chụp trước khi BTC bổ sung bảng Anh → Việt, nên ba bảng trên (lấy từ [thư mục Drive của BTC](https://drive.google.com/drive/folders/1Gm8ziMP-XwbP5Ce1InVCusy-S0uNWf62)) được đóng sẵn trong APK và dùng khi dataset không có hàng cho ID đó. Bảng nằm trong dataset luôn được ưu tiên; cột `ref_source` cho biết nguồn. Vie-Kor vẫn bị bỏ qua.
+
+Chỉ số cho mỗi track (`eval_mt_summary.csv`) và từng mẫu (`eval_mt.csv`):
+
+- `bleu`: tương thích sacreBLEU (tokenizer 13a, tiếng Trung dùng `zh`).
+- `chrf`: chrF2 theo mặc định sacreBLEU.
+- `cer`: khoảng cách sửa theo ký tự / độ dài tham chiếu.
+- `accuracy`: `100 × (1 − CER)`, không âm — tỉ lệ ký tự tham chiếu được dịch đúng.
+- `exact_match`: % mẫu khớp hoàn toàn sau chuẩn hóa.
+
+Chuẩn hóa trước khi chấm: NFC, chữ thường, bỏ dấu câu, gộp khoảng trắng (tiếng Trung bỏ hết khoảng trắng). Bảng Anh → Việt đã được BTC chuẩn hóa (chữ thường, không dấu câu, **số viết bằng chữ**), nên riêng track EV app đổi chữ số trong kết quả thành chữ trước khi so. Cách đọc số chỉ gần đúng: bảng có những cách đọc không suy ra được từ chữ số (ví dụ `sixteen forty five`), khoảng 13/100 hàng EV có số và có thể bị chấm thấp hơn thực tế.
+
+### 4.3. Chạy thư mục dataset đã có trên thiết bị
+
+Nếu muốn dùng nguyên thư mục Drive thay cho ZIP Hugging Face: tải thư mục về máy tính, đẩy vào bộ nhớ của app rồi khởi động app kèm tham số (PowerShell B, tunnel đang mở):
+
+```powershell
+adb -H 127.0.0.1 -P 5038 -s $serial push '.\Round3' '/sdcard/Android/data/com.larplarpsahur/files/datasets/Round3'
+```
+
+```powershell
+adb -H 127.0.0.1 -P 5038 -s $serial shell am start -n com.larplarpsahur/.MainActivity --ez auto_run true --es dataset_root /sdcard/Android/data/com.larplarpsahur/files/datasets/Round3
+```
+
+Tham số tùy chọn: `--es tracks VE-vi,EV-en`, `--ei limit 10` (số mẫu mỗi track), `--es mt_mode pipeline|oracle|both`, `--ez track_targets false --es target_language en`. Nên đặt tên thư mục nguồn không dấu, không khoảng trắng.
 
 Nguồn tải model:
 
@@ -124,9 +178,12 @@ Nguồn tải model:
 
 ## 5. Pull ZIP kết quả về máy tính
 
-Sau khi **Xuất kết quả** vào Download trên điện thoại, giữ SSH tunnel ở cửa sổ A; chạy ở PowerShell B:
+Sau khi **Xuất kết quả** vào Download trên điện thoại, giữ SSH tunnel ở cửa sổ A; chạy ở PowerShell B. **Phải gán `$serial` trước**: nếu biến rỗng, adb hiểu `shell` là serial và báo `ls requires an argument`; `adb devices` không kèm `-H/-P` chỉ liệt kê thiết bị cắm vào máy tính, không phải điện thoại cloud.
 
 ```powershell
+adb -H 127.0.0.1 -P 5038 devices -l
+$serial = 'SERIAL_CLOUD_DEVICE'   # chữ đầu tiên của dòng có trạng thái "device" ở trên
+
 adb -H 127.0.0.1 -P 5038 -s $serial shell ls -lah /sdcard/Download
 
 $resultsDirectory = Join-Path $env:USERPROFILE 'Downloads\qdc-results'
@@ -141,7 +198,7 @@ Get-FileHash -LiteralPath "$resultsDirectory\larplarpsahur-results.zip" -Algorit
 Expand-Archive -LiteralPath "$resultsDirectory\larplarpsahur-results.zip" -DestinationPath "$resultsDirectory\extracted" -Force
 ```
 
-Kết quả nằm ở `%USERPROFILE%\Downloads\qdc-results`. `adb pull` chỉ sao chép, không xóa bản trên điện thoại. Lấy file về trước khi kết thúc session QDC.
+Pull thành công in ra `1 file pulled`. Kết quả nằm ở `%USERPROFILE%\Downloads\qdc-results`. `adb pull` chỉ sao chép, không xóa bản trên điện thoại. Lấy file về trước khi kết thúc session QDC.
 
 Nếu chưa xuất ZIP, kết quả gốc nằm trong `/sdcard/Android/data/com.larplarpsahur/files/results/<run>/`. Một số thiết bị cho phép lấy trực tiếp qua ADB:
 
@@ -151,14 +208,23 @@ adb -H 127.0.0.1 -P 5038 -s $serial shell ls /sdcard/Android/data/com.larplarpsa
 adb -H 127.0.0.1 -P 5038 -s $serial pull '/sdcard/Android/data/com.larplarpsahur/files/results/RUN_DIRECTORY' "$resultsDirectory"
 ```
 
-ZIP gồm `results.json`, `results.csv`, transcripts/translations, `eval_asr.csv`, `eval_mt.csv`, `eval_summary.json` và marker `DONE`, `CANCELLED` hoặc `FAILED`. `DONE` chỉ cho biết lượt chạy đã kết thúc; kiểm tra `error_samples` trong summary để biết mẫu lỗi. Audio/model không được đóng vào ZIP. Không có reference thì các metric tương ứng có thể là null/N/A.
+ZIP gồm `results.json`, `results.csv`, transcripts/translations, `eval_asr.csv`, `eval_mt.csv`, `eval_mt_summary.csv` (bảng độ chính xác bản dịch theo track), `eval_summary.json`, `dataset_scan.json` và marker `DONE`, `CANCELLED` hoặc `FAILED`. `DONE` chỉ cho biết lượt chạy đã kết thúc; kiểm tra `error_samples` trong summary để biết mẫu lỗi. Audio/model không được đóng vào ZIP. Không có reference thì các metric tương ứng có thể là null/N/A. Từ 1.2.0, `results.csv` có cột `mt_in`: câu thực sự đưa vào model dịch.
+
+Chấm lại trên máy tính (kiểm tra metric bằng sacreBLEU, CER không tính khác biệt định dạng như số/chữ, 她/他, tách ảnh hưởng của lỗi ASR lên bản dịch):
+
+```powershell
+pip install sacrebleu
+python tools\rescore_results.py "$resultsDirectory\extracted"
+```
 
 ## 6. Lỗi thường gặp
 
 - **Identity file not accessible:** sai đường dẫn/tên file PEM, hoặc file đã bị xóa. Kiểm tra `Test-Path -LiteralPath $keyPath`.
 - **UNPROTECTED PRIVATE KEY FILE:** chạy bước siết quyền ở trên; đảm bảo `-i` trỏ vào file PEM, không trỏ vào thư mục.
 - **Permission denied (publickey):** key không được máy chủ chấp nhận; kiểm tra key và lệnh tunnel thuộc session hiện tại, session chưa hết hạn. Welcome không phải xác nhận đăng nhập.
-- **bind ... Permission denied / Address already in use:** lỗi cổng Windows, không phải lỗi key. Kiểm tra `netstat -ano | findstr :5038`; nếu bị dùng/chặn, chọn cổng local khác trong QDC và đổi đồng bộ `-L` lẫn `adb -P`. Không dừng tiến trình lạ chỉ vì thấy PID.
+- **bind ... Permission denied / Address already in use:** lỗi cổng Windows, không phải lỗi key. Xem tiến trình đang giữ cổng:
+  `Get-NetTCPConnection -LocalPort 5038 -ErrorAction SilentlyContinue | Select-Object State, OwningProcess, @{n='Process';e={(Get-Process -Id $_.OwningProcess).ProcessName}}`.
+  Nếu là `adb` (thường do chạy lệnh `adb -P 5038` trước khi mở tunnel): `adb -P 5038 kill-server`. Nếu là `ssh`: đóng cửa sổ tunnel cũ. Chỉ dừng `adb`/`ssh`, không dừng tiến trình lạ. Nếu cổng trống mà vẫn lỗi, kiểm tra `netsh interface ipv4 show excludedportrange protocol=tcp`; khi 5038 nằm trong dải bị giữ, chọn cổng khác (ví dụ 15038) và đổi đồng bộ `-L` lẫn `adb -P`. Luôn mở tunnel **trước** khi chạy lệnh adb.
 - **adb devices trống hoặc nhầm điện thoại cá nhân:** luôn dùng đúng `-H 127.0.0.1 -P 5038` và serial cloud. Lệnh `adb devices` không có tham số có thể trỏ ADB local.
 - **pull: No such file:** liệt kê Download để lấy đúng tên ZIP; file vẫn nằm trên điện thoại cho đến khi `adb pull` thành công.
 - **Tạm dừng chưa phản hồi ngay:** đang chờ bước native inference kết thúc; nút không dừng tức thì giữa mọi token.
@@ -166,8 +232,12 @@ ZIP gồm `results.json`, `results.csv`, transcripts/translations, `eval_asr.csv
 ## 7. Cấu trúc và kiểm thử
 
 - `android/`: Gradle project, mã Java, UI, pipeline và thư viện AAR.
-- `android_asr_mt_benchmark_plan.md`: kế hoạch/định dạng đánh giá.
+- `android/app/src/main/java/com/onspeak47/`: mã sao chép từ OnSpeak47, **không sửa tay**; cập nhật bằng `tools/sync_onspeak47.sh <thư mục OnSpeak47>`.
+- `android/app/src/main/assets/reference_tables/`: ba bảng dịch Round 3 lấy từ Drive của BTC.
+- `CLAUDE.md`: hướng dẫn làm việc với repo, định nghĩa chỉ số và danh sách việc đã làm/còn mở.
+- `tools/rescore_results.py`: chấm lại `results.json` trên máy tính; `reports/`: báo cáo đánh giá từng lượt chạy.
+- `android_asr_mt_benchmark_plan.md`: kế hoạch/định dạng đánh giá (§23 bản 1.1.0, §24 bản 1.2.0).
 - `checkpoint.md`: trạng thái các tác vụ triển khai.
 - `outputs/`, `work/`, model, kết quả đánh giá và cấu hình SDK cục bộ không được đưa lên Git.
 
-Bản 1.0.3 đã vượt qua assembleDebug, lintDebug và 7 unit test. Chạy kiểm thử thực tế trên SM8850 để xác minh QNN, latency và chất lượng dịch. Các model/dataset và thư viện bên thứ ba tuân theo điều khoản của nguồn cung cấp tương ứng.
+Bản 1.2.0 đã vượt qua assembleDebug, lintDebug và 67 unit test trên JVM. Bản 1.1.0 đã chạy đủ 560/560 mẫu trên SM8850 (xem `reports/2026-11-12-quadata-v1.1.0.md`); **bản 1.2.0 chưa được chạy trên thiết bị**. Các model/dataset và thư viện bên thứ ba tuân theo điều khoản của nguồn cung cấp tương ứng.

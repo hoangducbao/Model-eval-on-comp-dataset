@@ -1,0 +1,249 @@
+/*
+ * OnSpeak47 — Mobile-tuned ONNX Runtime session options
+ */
+
+package com.onspeak47.util;
+
+import android.app.ActivityManager;
+import android.content.Context;
+import android.system.Os;
+import android.util.Log;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+import ai.onnxruntime.OrtEnvironment;
+import ai.onnxruntime.OrtEpDevice;
+import ai.onnxruntime.OrtException;
+import ai.onnxruntime.OrtHardwareDevice;
+import ai.onnxruntime.OrtSession;
+import ai.onnxruntime.extensions.OrtxPackage;
+import ai.onnxruntime.qnnpluginep.QnnPluginEpLibraryKt;
+
+/**
+ * Shared factory for OrtSession.SessionOptions tuned for on-device
+ * inference, following RTranslator's production configuration:
+ *
+ * <ul>
+ *   <li>Low-RAM devices (&le; 7 GB, RTranslator's cutoff): the CPU arena
+ *       allocator and memory-pattern planner are disabled. Both pre-allocate
+ *       from worst-case graph shapes and can inflate resident RAM
+ *       substantially; disabling them trades a little speed for much lower
+ *       memory. High-RAM devices keep both enabled.</li>
+ *   <li>NNAPI is off by default: with dynamic-int8 quantized models the NNAPI
+ *       EP frequently falls back to CPU per-node and adds conversion
+ *       overhead; RTranslator ships CPU-only. Flip {@link #USE_NNAPI} to
+ *       A/B test on device.</li>
+ *   <li>Graph optimization stays at ALL_OPT because the bundled .onnx files
+ *       are not pre-optimized offline. (To move optimization offline: save an
+ *       optimized model via Python's SessionOptions.optimized_model_filepath,
+ *       ship that file, and switch to NO_OPT here — faster session creation
+ *       and less runtime RAM.)</li>
+ * </ul>
+ */
+public final class OrtSessionConfig {
+
+    private static final String TAG = "OrtSessionConfig";
+
+    /** RTranslator's cutoff between "low memory" and normal session config. */
+    private static final long LOW_RAM_THRESHOLD_BYTES = 7L * 1024 * 1024 * 1024;
+
+    /**
+     * Enable the NNAPI execution provider for ASR/translation sessions.
+     * Read the class documentation before flipping — with the current
+     * dynamic-int8 models this usually measures slower than pure CPU.
+     */
+    public static final boolean USE_NNAPI = false;
+
+    /**
+     * Enable the XNNPACK execution provider (experimental, Phase 3.1):
+     * accelerates fp32 Conv/MatMul workloads. A/B on device with the
+     * PipelineOrchestrator timing/MEM[...] logs before making this true
+     * by default.
+     */
+    public static final boolean USE_XNNPACK = false;
+
+    private OrtSessionConfig() {}
+
+    /**
+     * Creates session options with the ort-extensions custom-op library
+     * optionally registered (needed by graphs using Mel/BPE/tensor ops).
+     * The caller owns the returned options and should close them after
+     * creating its sessions.
+     */
+    public static OrtSession.SessionOptions create(Context context, boolean registerOrtx) throws OrtException {
+        return create(context, registerOrtx, false);
+    }
+
+    /**
+     * @param preOptimized true when loading a graph already optimized offline
+     *                     by optimize/07_preoptimize.py (*.opt.onnx) — runtime
+     *                     re-optimization is then skipped (NO_OPT), removing
+     *                     the multi-second createSession pass and its peak-RAM
+     *                     spike on device.
+     */
+    public static OrtSession.SessionOptions create(Context context, boolean registerOrtx,
+                                                   boolean preOptimized) throws OrtException {
+        OrtSession.SessionOptions options = new OrtSession.SessionOptions();
+        if (registerOrtx) {
+            try {
+                options.registerCustomOpLibrary(OrtxPackage.getLibraryPath());
+            } catch (OrtException e) {
+                Log.e(TAG, "Extensions library not found", e);
+            }
+        }
+        boolean lowRam = isLowRamDevice(context);
+        options.setCPUArenaAllocator(!lowRam);
+        options.setMemoryPatternOptimization(!lowRam);
+        options.setOptimizationLevel(preOptimized
+                ? OrtSession.SessionOptions.OptLevel.NO_OPT
+                : OrtSession.SessionOptions.OptLevel.ALL_OPT);
+        if (USE_NNAPI) {
+            try {
+                options.addNnapi();
+                Log.i(TAG, "NNAPI execution provider enabled");
+            } catch (OrtException e) {
+                Log.w(TAG, "NNAPI not available, using CPU fallback", e);
+            }
+        }
+        if (USE_XNNPACK) {
+            try {
+                Map<String, String> xnnpackOpts = new HashMap<>();
+                xnnpackOpts.put("intra_op_num_threads",
+                        String.valueOf(Math.max(2, Runtime.getRuntime().availableProcessors() / 2)));
+                options.addXnnpack(xnnpackOpts);
+                Log.i(TAG, "XNNPACK execution provider enabled");
+            } catch (OrtException e) {
+                Log.w(TAG, "XNNPACK not available, using CPU fallback", e);
+            }
+        }
+        Log.i(TAG, "Session options: arena=" + !lowRam + ", memPattern=" + !lowRam
+                + ", nnapi=" + USE_NNAPI + ", xnnpack=" + USE_XNNPACK
+                + ", optLevel="
+                + (preOptimized ? "NO_OPT (pre-optimized graph)" : "ALL_OPT")
+                + " (lowRamDevice=" + lowRam + ")");
+        return options;
+    }
+
+    private static boolean qnnRegistered;
+    /** The QNN NPU device of the last addQnnHtp (HtpShared allocator lookup). */
+    static volatile OrtEpDevice npuDevice;
+    /**
+     * NPU graph I/O in HTP shared memory (util/HtpShared). Off: pref "htp_shared_io"
+     * = false in the TranslationActivity prefs (debug: run-as), read at the first NPU session.
+     */
+    static volatile boolean htpSharedIo = true;
+
+    /** Settings › "Giới hạn công suất (TDP)", in TranslationActivity's getPreferences file. */
+    public static final String PREF_TDP_LIMIT = "tdp_limit";
+    /** Settings › "Giảm nhiệt, giữ tốc độ": same NPU clocks, less CPU busy-work (read at load). */
+    public static final String PREF_COOL_RUN = "cool_run";
+    /** Settings › "Chế độ phiên dài": includes cool run (D:\thang.txt ran burst and was killed hot). */
+    public static final String PREF_OVERHEAT = "overheat_protect";
+
+    /** The NPU clock governor, when long-session mode is on and its start-up probe passed. */
+    public static volatile NpuClock clock;
+    private static boolean clockTried;
+
+    public static boolean longSession(Context context) {
+        return context.getSharedPreferences("TranslationActivity", Context.MODE_PRIVATE)
+                .getBoolean(PREF_OVERHEAT, false);
+    }
+
+    public static boolean coolRun(Context context) {
+        android.content.SharedPreferences p =
+                context.getSharedPreferences("TranslationActivity", Context.MODE_PRIVATE);
+        return p.getBoolean(PREF_COOL_RUN, false) || p.getBoolean(PREF_OVERHEAT, false);
+    }
+
+    /**
+     * burst by default; the TDP switch trades speed for heat (read once per session load).
+     * Cool run: sustained_high_performance. In the shipped plugin (onnxruntime-android-qnn 2.7.0,
+     * disassembled HtpPowerConfigManager::SetHtpPerformancePowerConfig) it jumps to the same HTP
+     * vote as burst (max core + bus corner, 40 us sleep latency, DCVS off); only burst also turns
+     * on 9999 us DSPQ polling (QnnEp ctor / GetPerThreadHtpPowerConfigs: mode == burst), so the
+     * calling CPU thread spun up to 10 ms of every graph run instead of sleeping until it ends.
+     */
+    static String htpPerfMode(Context context) {
+        boolean limit = context.getSharedPreferences("TranslationActivity", Context.MODE_PRIVATE)
+                .getBoolean(PREF_TDP_LIMIT, false);
+        return limit ? "balanced" : coolRun(context) ? "sustained_high_performance" : "burst";
+    }
+
+    /**
+     * Puts the Hexagon NPU (Qualcomm's QNN plugin EP,
+     * com.qualcomm.qti:onnxruntime-android-qnn) first on {@code options} for
+     * an EPContext model compiled by optimize/16_qnn_compile.py. An EPContext
+     * node has no CPU kernel, so a context the HTP cannot load fails at
+     * createSession (caller falls back) instead of silently running on CPU;
+     * the few host ops around it (HY-MT's embedding lookup) stay on CPU.
+     *
+     * @return false when there is no QNN NPU device (non-Snapdragon phone,
+     *         emulator, JVM tests); the caller keeps its CPU path.
+     */
+    public static synchronized boolean addQnnHtp(Context context, OrtSession.SessionOptions options) {
+        if (context == null || options == null) return false;
+        String perf = htpPerfMode(context);
+        // Long-session mode: one tiny session holds the clock vote (util/NpuClock), the models none.
+        if (!clockTried && longSession(context) && !"balanced".equals(perf)) {
+            clockTried = true;
+            clock = NpuClock.tryCreate(context, perf);
+        }
+        return addQnnHtp(context, options, clock != null ? null : perf);
+    }
+
+    /** {@code perf}: the session's own HTP vote, null = none (it runs at whatever others voted). */
+    static synchronized boolean addQnnHtp(Context context, OrtSession.SessionOptions options, String perf) {
+        try {
+            OrtEnvironment env = OrtEnvironment.getEnvironment();
+            String ep = QnnPluginEpLibraryKt.getEpName();
+            if (!qnnRegistered) {
+                // FastRPC loads libQnnHtpV81Skel.so only from ADSP_LIBRARY_PATH;
+                // the app's (extracted, useLegacyPackaging) lib dir must be on it.
+                Os.setenv("ADSP_LIBRARY_PATH", context.getApplicationInfo().nativeLibraryDir
+                        + ";/odm/lib/rfsa/adsp;/vendor/lib/rfsa/adsp;/system/lib/rfsa/adsp"
+                        + ";/system/vendor/lib/rfsa/adsp;/dsp", true);
+                env.registerExecutionProviderLibrary(ep, QnnPluginEpLibraryKt.getLibraryPath());
+                qnnRegistered = true;
+            }
+            List<OrtEpDevice> npu = new ArrayList<>();
+            for (OrtEpDevice d : env.getEpDevices()) {
+                if (ep.equals(d.getEpName())
+                        && d.getDevice().getType() == OrtHardwareDevice.OrtHardwareDeviceType.NPU) {
+                    npu.add(d);
+                }
+            }
+            if (npu.isEmpty()) {
+                Log.i(TAG, "no QNN NPU device: " + env.getEpDevices());
+                return false;
+            }
+            Map<String, String> opts = new HashMap<>();
+            opts.put("backend_type", "htp");
+            if (perf != null) opts.put("htp_performance_mode", perf);
+            htpSharedIo = context.getSharedPreferences("TranslationActivity", Context.MODE_PRIVATE)
+                    .getBoolean("htp_shared_io", true);
+            if (htpSharedIo) opts.put("enable_htp_shared_memory_allocator", "1");
+            npuDevice = npu.get(0);
+            options.addExecutionProvider(npu, opts);
+            Log.i(TAG, "QNN HTP performance mode " + (perf != null ? perf : "none (NpuClock votes)"));
+            return true;
+        } catch (Throwable t) {
+            Log.w(TAG, "QNN HTP unavailable, CPU path", t);
+            return false;
+        }
+    }
+
+    private static boolean isLowRamDevice(Context context) {
+        try {
+            ActivityManager am = (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
+            if (am == null) return true;
+            ActivityManager.MemoryInfo info = new ActivityManager.MemoryInfo();
+            am.getMemoryInfo(info);
+            return info.totalMem <= LOW_RAM_THRESHOLD_BYTES;
+        } catch (Exception e) {
+            return true;   // assume constrained when unknown
+        }
+    }
+}
