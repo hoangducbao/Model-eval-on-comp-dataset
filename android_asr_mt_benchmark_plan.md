@@ -750,6 +750,12 @@ Thêm vào §19.2: `chrf` (chrF2), `accuracy` = 100 × (1 − CER) không âm, `
 
 60 unit test JVM đạt; BLEU và chrF khớp sacreBLEU (sai khác < 1e-6) trên bốn cột reference thật. **Chưa chạy trên SM8850**: latency, bộ nhớ dùng chung HTP và chất lượng dịch của 1.1.0 chưa được xác minh.
 
+## 24. Bản 1.2.0 (2026-11-16): chuyển sang nhánh `hymt2-125bit`
+
+- Mã OnSpeak47 lấy từ nhánh `hymt2-125bit` (commit `18f28fb`, nối tiếp `499d54e` của §23); package đổi thành `com.onspeak47`. Model và REV không đổi.
+- Đường dịch theo bản 1.1.2–1.1.3 của OnSpeak47: câu mồi xưng hô tiếng Việt làm ngữ cảnh, 他 → 她 khi có từ chỉ nữ giới, ngữ cảnh cho mọi đoạn trong giới hạn một lượt prefill thêm. Nhắm vào hai lỗi đại từ trong báo cáo `reports/2026-11-12-quadata-v1.1.0.md`.
+- Chưa chạy trên SM8850.
+
 ## Phụ lục A: Pseudo-code metric
 
 ### CER (corpus-level)

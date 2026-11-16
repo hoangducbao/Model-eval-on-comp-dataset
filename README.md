@@ -11,7 +11,7 @@
 - Internet và dung lượng trống cho model khoảng 1,85 GB, ZIP dataset khoảng 93 MB, dữ liệu giải nén và kết quả.
 - Tài khoản Qualcomm Device Cloud (QDC), session còn hoạt động và tùy chọn SSH tunnel nếu cần điều khiển từ máy tính.
 
-Model được tải riêng khi mở app lần đầu. Không cần `qdc_build_run.py`. Mã ASR/dịch trong `com.omnivoice.onspeak47` được sao chép từ [OnSpeak47](https://github.com/DS-PNQ/OnSpeak47) nhánh `hymt2+qwen3asr`; commit đang dùng ghi trong `android/ONSPEAK47_UPSTREAM`.
+Model được tải riêng khi mở app lần đầu. Không cần `qdc_build_run.py`. Mã ASR/dịch trong `com.onspeak47` được sao chép từ [OnSpeak47](https://github.com/DS-PNQ/OnSpeak47) nhánh `hymt2-125bit` (từ bản 1.2.0; trước đó `hymt2+qwen3asr`); commit đang dùng ghi trong `android/ONSPEAK47_UPSTREAM`.
 
 ## 2. Clone, build và xuất APK
 
@@ -124,6 +124,8 @@ Bản dịch đi qua đúng đường dịch của app OnSpeak47, không gọi t
 - Câu đã ở sẵn ngôn ngữ đích được **sao chép**, không dịch (cột `mt_copied` trong `results.csv`).
 - Số, email đọc thành lời được đổi sang dạng viết trước khi dịch; transcript dài hơn 200 ký tự được cắt theo câu, mỗi đoạn dùng ngân sách 128 token và lấy đoạn trước làm ngữ cảnh.
 
+Từ bản 1.2.0 (OnSpeak47 nhánh `hymt2-125bit`): câu nguồn tiếng Việt luôn kèm một câu chào mẫu làm ngữ cảnh để model hiểu *anh/chị* là "you" chứ không phải "he/she"; với tiếng Trung, 他 được đổi thành 她 khi trước đó có từ chỉ nữ giới (chị, mẹ, con gái…). Cột `mt_in` trong `results.csv` là đúng câu đã đưa vào model dịch.
+
 Vì vậy điểm BLEU/CER của bản 1.0.x và 1.1.0 **không so sánh trực tiếp được**; hãy chạy lại dataset.
 
 ### 4.2. Độ chính xác bản dịch
@@ -214,7 +216,7 @@ ZIP gồm `results.json`, `results.csv`, transcripts/translations, `eval_asr.csv
 ## 7. Cấu trúc và kiểm thử
 
 - `android/`: Gradle project, mã Java, UI, pipeline và thư viện AAR.
-- `android/app/src/main/java/com/omnivoice/onspeak47/`: mã sao chép từ OnSpeak47, **không sửa tay**; cập nhật bằng `tools/sync_onspeak47.sh <thư mục OnSpeak47>`.
+- `android/app/src/main/java/com/onspeak47/`: mã sao chép từ OnSpeak47, **không sửa tay**; cập nhật bằng `tools/sync_onspeak47.sh <thư mục OnSpeak47>`.
 - `android/app/src/main/assets/reference_tables/`: ba bảng dịch Round 3 lấy từ Drive của BTC.
 - `CLAUDE.md`: hướng dẫn làm việc với repo, định nghĩa chỉ số và danh sách việc đã làm/còn mở.
 - `android_asr_mt_benchmark_plan.md`: kế hoạch/định dạng đánh giá (§23 mô tả bản 1.1.0).

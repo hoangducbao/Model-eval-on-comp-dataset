@@ -1,4 +1,4 @@
-// OmniVoice — QNN HTP shared-memory (rpcmem) tensors for ORT Java (util/HtpShared).
+// OnSpeak47 — QNN HTP shared-memory (rpcmem) tensors for ORT Java (util/HtpShared).
 //
 // ORT 1.29 Java cannot reach a device allocator, so every NPU graph input/output was
 // plain CPU memory that the QNN EP copied into its own shared buffers on each run
@@ -49,7 +49,7 @@ static OrtAllocator *allocator(OrtEnv *env, const OrtEpDevice *dev, const OrtSes
 }
 
 // New tensor (OrtValue*) of `shape` / ONNX element `type` in HTP shared memory, or 0.
-JNIEXPORT jlong JNICALL Java_com_omnivoice_onspeak47_util_HtpShared_create(
+JNIEXPORT jlong JNICALL Java_com_onspeak47_util_HtpShared_create(
         JNIEnv *e, jclass c, jlong env, jlong dev, jlong session, jlongArray shape, jint type) {
     OrtAllocator *a = allocator((OrtEnv *) env, (const OrtEpDevice *) dev, (const OrtSession *) session);
     if (!a) return 0;
@@ -63,7 +63,7 @@ JNIEXPORT jlong JNICALL Java_com_omnivoice_onspeak47_util_HtpShared_create(
 }
 
 // Direct ByteBuffer over the tensor's data (valid until the OrtValue is released).
-JNIEXPORT jobject JNICALL Java_com_omnivoice_onspeak47_util_HtpShared_buffer(JNIEnv *e, jclass c, jlong value) {
+JNIEXPORT jobject JNICALL Java_com_onspeak47_util_HtpShared_buffer(JNIEnv *e, jclass c, jlong value) {
     void *data = NULL;
     size_t bytes = 0;
     if (!ok(api->GetTensorMutableData((OrtValue *) value, &data), "data")

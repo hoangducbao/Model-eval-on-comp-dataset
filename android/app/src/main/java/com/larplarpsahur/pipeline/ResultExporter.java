@@ -92,7 +92,7 @@ public final class ResultExporter {
         summary.put("asr",asrSummary).put("mt",mtSummary);
         JSONObject meta=new JSONObject(run.toString());meta.remove("samples");meta.put("status",status).put("finished_at_ms",System.currentTimeMillis());
         Io.atomic(new File(directory,"results.json"),new JSONObject().put("schema_version",1).put("run",meta).put("summary",summary).put("samples",results).toString(2));
-        csv("results.csv",results,"track,id,audio,duration_s,src_lang,mt_src_lang,tgt_lang,ref_text,asr_hyp,wer,cer,ref_trans,ref_source,mt_hyp,mt_oracle_hyp,mt_cer,mt_accuracy,sent_bleu,sent_chrf,asr_ms,mt_ms,rtf,status,error");
+        csv("results.csv",results,"track,id,audio,duration_s,src_lang,mt_src_lang,tgt_lang,ref_text,asr_hyp,wer,cer,ref_trans,ref_source,mt_in,mt_hyp,mt_oracle_hyp,mt_cer,mt_accuracy,sent_bleu,sent_chrf,asr_ms,mt_ms,rtf,status,error");
         Io.atomic(new File(directory,"transcripts.json"),transcripts.toString(2));
         Io.atomic(new File(directory,"translations.json"),translations.toString(2));
         csv("transcripts.csv",transcripts,"track,id,audio_path,lang,asr_hyp,status");

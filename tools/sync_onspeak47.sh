@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Re-vendor the OnSpeak47 sources this app reuses.
 #
-#   tools/sync_onspeak47.sh /path/to/OnSpeak47-checkout   (branch hymt2+qwen3asr)
+#   tools/sync_onspeak47.sh /path/to/OnSpeak47-checkout   (branch hymt2-125bit)
 #
 # Copies the files listed below verbatim, then re-applies tools/onspeak47-local.patch
 # (the only local edits allowed inside vendored files). Files that exist only here
@@ -10,11 +10,11 @@ set -euo pipefail
 UP=${1:?usage: tools/sync_onspeak47.sh <OnSpeak47 checkout>}
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 SRC=android/app/src
-PKG=java/com/omnivoice/onspeak47
+PKG=java/com/onspeak47
 
 MAIN_FILES=(
   util/FileUtils.java util/NpuStats.java util/OrtSessionConfig.java
-  util/HtpShared.java util/NpuGraph.java util/LoopGuard.java
+  util/HtpShared.java util/NpuGraph.java util/LoopGuard.java util/NpuClock.java
   asr/AsrLanguage.java asr/AsrModelType.java asr/AsrState.java
   asr/QwenAsr.java asr/QwenAsrNpuEngine.java asr/ScriptLid.java
   pipeline/HyMtBpeTokenizer.java pipeline/HyMtNpuDecoder.java pipeline/HyMtOnnxModule.java
@@ -24,6 +24,7 @@ MAIN_FILES=(
 TEST_FILES=(
   asr/QwenAsrTest.java asr/ScriptLidTest.java
   pipeline/GlossaryTest.java pipeline/HyMtOnnxTest.java pipeline/MtContextTest.java
+  util/NpuClockTest.java
 )
 JNI_FILES=(CMakeLists.txt htpshared.c include/onnxruntime_c_api.h
   include/onnxruntime_ep_c_api.h include/onnxruntime_error_code.h)

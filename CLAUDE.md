@@ -8,7 +8,7 @@ done or planned, update "Tasks and progress" (and add the matching entry to `che
 
 **larplarpsahur** (`com.larplarpsahur`, single-module Java Android app under `android/`) benchmarks
 the speech-translation pipeline of [DS-PNQ/OnSpeak47](https://github.com/DS-PNQ/OnSpeak47)
-(branch `hymt2+qwen3asr`): **Qwen3-ASR → Hy-MT2 translation**, both on the Hexagon NPU of a
+(branch `hymt2-125bit`; before 1.2.0 `hymt2+qwen3asr`): **Qwen3-ASR → Hy-MT2 translation**, both on the Hexagon NPU of a
 Snapdragon 8 Elite Gen 5 (SM8850), usually a Qualcomm Device Cloud phone. It runs single audio
 files or the Qualcomm "Round 3" sample dataset and scores the output in the app:
 
@@ -24,10 +24,10 @@ downloaded by the app on first launch.
 | Path | Contents |
 |---|---|
 | `android/app/src/main/java/com/larplarpsahur/` | This app: UI (`MainActivity`), foreground worker (`WorkService`), `dataset/` (download, scan, XLSX), `model/` (model download + SHA-256), `pipeline/` (audio decode, runner, metrics, export). |
-| `android/app/src/main/java/com/omnivoice/onspeak47/` | **Vendored** OnSpeak47 sources (see below). Do not edit by hand. |
+| `android/app/src/main/java/com/onspeak47/` | **Vendored** OnSpeak47 sources (see below). Do not edit by hand. |
 | `android/app/src/main/jni/` | Vendored `htpshared` JNI shim (QNN HTP shared-memory tensors) + ONNX Runtime C headers. |
 | `android/app/src/main/assets/reference_tables/` | Round 3 translation tables from the organisers' Drive folder (fallback references). |
-| `android/app/src/test/java/` | JVM unit tests: `com/larplarpsahur` (ours) and `com/omnivoice/onspeak47` (vendored upstream tests + `SegmentTranslatorTest`). |
+| `android/app/src/test/java/` | JVM unit tests: `com/larplarpsahur` (ours) and `com/onspeak47` (vendored upstream tests + `SegmentTranslatorTest`). |
 | `android/ONSPEAK47_UPSTREAM` | Upstream repo, branch and commit the vendored files were copied from. Read by `build.gradle` into `BuildConfig.ONSPEAK47_COMMIT`. |
 | `tools/sync_onspeak47.sh`, `tools/onspeak47-local.patch` | Re-vendoring script and the only local edits allowed inside vendored files. |
 | `tools/rescore_results.py` | PC-side re-scoring of an exported `results.json` (sacreBLEU check, format-neutral ASR view, ASR→MT split). Needs `pip install sacrebleu`. |
@@ -73,9 +73,11 @@ logic. They do **not** exercise the NPU: inference only runs on an SM8850 device
    atomically, so a paused or killed run resumes.
 5. **Translate** (`SegmentTranslator`, in the vendored package): OnSpeak47's commit path —
    `ScriptLid` reads the source language from the transcript, a row already in the target
-   language is copied, numbers/emails go to written form, text is cut into ≤200-char segments
-   decoded with the 128-token commit budget, and the previous segment of the same audio is
-   forced-prefix context.
+   language is copied, numbers/emails go to written form, Chinese 他 becomes 她 after a female
+   word (`zhMtForm`), text is cut into ≤200-char segments decoded with the 128-token commit
+   budget, and forced-prefix context rides along: the Vietnamese kinship primer
+   (`HyMtOnnxModule.primer`, so *anh/chị* read as "you") and the previous segment of the same
+   audio. `mt_in` in the results is the exact text the MT received.
 6. **Score + export** (`Metrics`, `ResultExporter`): see below. Results ZIP is saved through
    the Android document picker.
 
@@ -123,12 +125,13 @@ EV rows that contain numbers. The signature column says which profile scored a r
 
 ## Vendored OnSpeak47 code
 
-`com.omnivoice.onspeak47` is copied from the upstream branch, not forked. Rules:
+`com.onspeak47` is copied from the upstream branch, not forked (upstream renamed the package
+from `com.omnivoice.onspeak47` on 2026-11-13; the JNI symbols in `htpshared.c` follow it). Rules:
 
 - **Never edit a vendored file directly.** Change `tools/onspeak47-local.patch` instead (it
   currently adds `QwenAsrNpuEngine.transcribeFileBlock` and stops `HyMtOnnxModule.close` from
   closing the process-wide `OrtEnvironment`).
-- To move to a newer upstream commit: check out OnSpeak47 `hymt2+qwen3asr`, run
+- To move to a newer upstream commit: check out OnSpeak47 `hymt2-125bit`, run
   `tools/sync_onspeak47.sh <checkout>`, fix the patch if it no longer applies, run the tests,
   and re-read `PipelineOrchestrator.translateSegmentWithDraft` upstream — `SegmentTranslator`
   mirrors it by hand and must follow it.
@@ -154,9 +157,21 @@ EV rows that contain numbers. The signature column says which profile scored a r
 
 ## Tasks and progress
 
-Status as of 2026-11-12, app version **1.1.0** (versionCode 5), upstream `499d54e` (2026-11-11).
+Status as of 2026-11-16, app version **1.2.0** (versionCode 6), upstream `hymt2-125bit` `18f28fb` (2026-11-16).
 
-### Done in this round (2026-11-12)
+### Done (2026-11-16): move to `hymt2-125bit`
+
+- [x] **Upstream sync** to `hymt2-125bit` `18f28fb` (descends from `499d54e`; checkpoint Task 14).
+  Package renamed `com.omnivoice.onspeak47` → `com.onspeak47` here too; `NpuClock` and
+  `NpuClockTest` vendored; the local patch still has the same two hunks. Models and REVs unchanged.
+- [x] **Translation path follows upstream 1.1.2–1.1.3:** Vietnamese kinship primer as context,
+  他 → 她 for Chinese input after a female word, context on every segment within one extra
+  prefill run (`MT_CONTEXT_EXTRA_RUNS` 0 → 1). Targets the two pronoun problems of the
+  2026-11-12 report. `SegmentTranslator.prepare` is unit-tested; new `mt_in` result field.
+- [x] **Verified build:** `assembleDebug`, 67 JVM tests (0 skipped with `-PhymtTokenizer`) and
+  `lintDebug` pass. Not run on an SM8850 yet.
+
+### Done (2026-11-12)
 
 - [x] **Survey.** Established that the vendored code matched upstream `c9b9950` (2026-10-23) plus
   small local edits; upstream head is `499d54e`. Model releases and graph REVs are unchanged
@@ -190,10 +205,10 @@ Status as of 2026-11-12, app version **1.1.0** (versionCode 5), upstream `499d54
 
 ### Not verified / open
 
-- [ ] **Logcat checks of 1.1.0.** The device run worked end to end, but its logcat was not
-  captured: `HtpShared` should print `NPU graph I/O in HTP shared memory`, and `HyMtOnnxModule`
-  should show `mt context:` lines only for multi-segment audio (none in Round 3: every
-  transcript was one segment).
+- [ ] **Logcat checks.** The 1.1.0 device run worked end to end, but its logcat was not
+  captured: `HtpShared` should print `NPU graph I/O in HTP shared memory`. Since 1.2.0
+  `HyMtOnnxModule` prints `mt context: … lines=N` for every Vietnamese-source segment (primer)
+  and for later segments of multi-segment audio.
 - [ ] **Oracle run.** Run the dataset with `mt_mode=both` to measure translation on reference
   transcripts and separate it from ASR errors (report §4.2, §7.1).
 - [ ] **Dataset defects.** Report to the organisers: VM-5201, VM-0383, VM-1989, VM-5942 have a
@@ -202,8 +217,10 @@ Status as of 2026-11-12, app version **1.1.0** (versionCode 5), upstream `499d54
 - [ ] **Format-neutral ASR score in the app.** Strict CER counts 她/他, 得/的, erhua 儿, digits vs
   words and English fillers/contractions as errors (zh strict 3.9 % vs 0.5 %). Port the lenient
   profile of `tools/rescore_results.py` into `Metrics` as a second column.
-- [ ] **Pronoun errors upstream.** Hy-MT2 translated Vietnamese *anh/chị* = "you" as he/she in
-  8 of 16 VE sentences. Raise with OnSpeak47 (prompt or context); do not patch locally.
+- [ ] **Measure the 1.2.0 pronoun fixes on device.** 1.1.0 translated *anh/chị* = "you" as he/she
+  in 8 of 16 VE sentences and 她 as male in 22 of 33 VM-zh sentences. Upstream's own A/B: 17 → 1
+  wrong of 34 for the primer; 他 → 她 needs a female word nearby, so many VM-zh rows ("她来了吗？")
+  cannot change. Re-run Round 3 with 1.2.0 and compare with `reports/2026-11-12-quadata-v1.1.0.md`.
 - [ ] **EV-2748 empty transcript** (only hard ASR failure); listen to the clip. Also listen to the
   ~12 VM-vi clips with garbled ASR listed in the report §3.2.
 - [ ] **`Numbers` reads "5:30" without "giờ"** for Vietnamese; align with the rescoring script.

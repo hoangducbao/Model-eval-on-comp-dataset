@@ -12,7 +12,7 @@ def hyMtModelBase = providers.gradleProperty('hyMtModelBase')
 // from plain direct buffers (slower per token, same results).
 def htpShared = !providers.gradleProperty('noHtpShared').isPresent()
 
-// Upstream commit of the vendored com.omnivoice.onspeak47 sources (written by tools/sync_onspeak47.sh).
+// Upstream commit of the vendored com.onspeak47 sources (written by tools/sync_onspeak47.sh).
 def onspeakCommit = rootProject.file('ONSPEAK47_UPSTREAM').readLines().find { it.startsWith('commit: ') }.substring(8, 16)
 
 android {
@@ -32,8 +32,8 @@ android {
         applicationId 'com.larplarpsahur'
         minSdk 27
         targetSdk 34
-        versionCode 5
-        versionName '1.1.0'
+        versionCode 6
+        versionName '1.2.0'
 
         buildConfigField 'String', 'QWEN_MODEL_BASE', '"' + qwenModelBase + '"'
         buildConfigField 'String', 'HYMT_MODEL_BASE', '"' + hyMtModelBase + '"'

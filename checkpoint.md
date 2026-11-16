@@ -1,5 +1,19 @@
 # Checkpoint
 
+## Task 14 — Move to OnSpeak47 `hymt2-125bit` (2026-11-16)
+- Status: complete in code and JVM tests; not run on a device. Version 1.2.0 (versionCode 6).
+- Upstream: branch `hymt2-125bit` at `18f28fb` (2026-11-16, "Version 1.1.3", merge of `fix/mt-pronouns`). It descends from `499d54e`, the commit 1.1.0 vendored, so this is a fast-forward of the same line. Model releases and graph REVs are unchanged (Qwen `v2.2.0-npu` REV 1, Hy-MT2 `v2.1.0-npu` REV 8); `ModelRepository` untouched.
+- Package rename: upstream moved `com.omnivoice.onspeak47` → `com.onspeak47` (2026-11-13), JNI symbols included. The vendored tree moved with `git mv`; `tools/sync_onspeak47.sh` points at the new path; our three local files and `PipelineRunner` imports were updated.
+- Newly vendored: `util/NpuClock.java` (now referenced by `OrtSessionConfig` for long-session mode; inert here because the app never sets that preference) and `util/NpuClockTest.java`. Local patch regenerated: still two hunks (`transcribeFileBlock`, shared `OrtEnvironment`).
+- Translation-path changes taken over in `SegmentTranslator` (mirrors `PipelineOrchestrator.translateSegmentWithDraft` at `18f28fb`):
+  - `HyMtNpuDecoder.CONTEXT` is now a list of lines, oldest first: the Vietnamese kinship primer `HyMtOnnxModule.primer` ("Em chào anh chị ạ." → "Hello." / "你好。") for every Vietnamese-source segment, then the previous segment;
+  - Chinese input goes through `ScriptLid.zhMtForm`: 他 → 她 after a female word in this segment or the previous one;
+  - the previous segment is stored as the MT input (with 她), not the raw transcript;
+  - `AsrState.MT_CONTEXT_EXTRA_RUNS` 0 → 1 (context may cost one extra 64-token prefill, ~65 ms upstream).
+- Refactor: the routing/shaping step is `SegmentTranslator.prepare` (no I/O) and is unit-tested (primer, 他 → 她, copy). New result field `mt_in` (also in `results.csv`): the exact text sent to the MT.
+- Verification: `:app:assembleDebug :app:testDebugUnitTest :app:lintDebug` pass; 67 tests, 0 failures, 0 skipped with `-PhymtTokenizer` (60 before + `NpuClockTest` + new `ScriptLidTest`/`MtContextTest` cases + 3 `SegmentTranslatorTest`). APK 1.2.0 contains `libhtpshared.so` and the bundled tables.
+- Expected effect (from the 2026-11-12 report): fewer *anh/chị* → he/she errors in VE-vi (8/16 in 1.1.0; upstream's A/B 17 → 1 of 34); 她 fixes only where a female word appears, so most of the 22/33 VM-zh cases stay. Slightly higher MT latency for Vietnamese sources (primer). To be measured on device.
+
 ## Task 13 — Evaluate the first 1.1.0 device run (2026-11-12)
 - Status: complete. Report: `reports/2026-11-12-quadata-v1.1.0.md`; script: `tools/rescore_results.py`.
 - Input: `larplarpsahur-results.zip` from QDC ("Canoe for arm64", SM8850), app 1.1.0, upstream `499d54ee`, quadata `fed18c73`, `mt_mode=pipeline`, track targets on. 560 samples (VE-vi 100, VM-vi 180, VM-zh 180, EV-en 100), DONE, 0 errors, 539.8 s wall-clock for 2,124 s of audio. EV references came from the bundled E→V table (100/100).

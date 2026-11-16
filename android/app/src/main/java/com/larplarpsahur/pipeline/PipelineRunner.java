@@ -5,8 +5,8 @@ import android.net.Uri;
 import android.os.SystemClock;
 import android.util.Log;
 import com.larplarpsahur.Io;
-import com.omnivoice.onspeak47.asr.QwenFileRecognizer;
-import com.omnivoice.onspeak47.pipeline.SegmentTranslator;
+import com.onspeak47.asr.QwenFileRecognizer;
+import com.onspeak47.pipeline.SegmentTranslator;
 import java.util.*;
 import org.json.*;
 
@@ -66,7 +66,7 @@ public final class PipelineRunner {
                         // Runs saved before 1.1.0 have no routed transcript; rebuild it from the tag.
                         String routed=r.has("asr_routed")?r.optString("asr_routed"):QwenFileRecognizer.routed(src,r.optString("asr_hyp"));
                         SegmentTranslator.Result t=translate(mt,routed,src,target,cancel);
-                        r.put("mt_hyp",t.text).put("mt_src_lang",t.sourceLanguage).put("mt_segments",t.segments).put("mt_copied",t.copied);
+                        r.put("mt_hyp",t.text).put("mt_in",t.input).put("mt_src_lang",t.sourceLanguage).put("mt_segments",t.segments).put("mt_copied",t.copied);
                     }
                     if(!"pipeline".equals(mode)) {
                         if(!r.isNull("ref_text")) {
