@@ -2,6 +2,8 @@
 
 Ứng dụng Android **larplarpsahur** đánh giá pipeline **Qwen ASR → HY-MT translation** trên audio riêng lẻ hoặc dataset Qualcomm Round 3 (`Echdipi/quadata`). ASR tự nhận diện ngôn ngữ nguồn; audio riêng lẻ cho phép chọn tiếng Việt, English hoặc 中文 làm ngôn ngữ dịch.
 
+**Phiên bản hiện tại: 1.2.0** (OnSpeak47 nhánh `hymt2-125bit`, commit `18f28fb`). Kết quả đánh giá lượt chạy trên thiết bị: [`reports/`](reports/). Lịch sử thay đổi: [`checkpoint.md`](checkpoint.md).
+
 ## 1. Chuẩn bị
 
 - Windows PowerShell, Git, JDK 21 và Android SDK Platform 34 cùng Build Tools/Platform Tools tương thích Gradle của dự án. Có thể cài SDK bằng Android Studio.
@@ -15,7 +17,7 @@ Model được tải riêng khi mở app lần đầu. Không cần `qdc_build_r
 
 ## 2. Clone, build và xuất APK
 
-Repo riêng tư: đăng nhập GitHub trước khi clone, ví dụ `gh auth login`.
+Repo riêng tư: đăng nhập GitHub trước khi clone, ví dụ `gh auth login`. Nếu đã clone trước đó, chỉ cần cập nhật: `git -C <thư mục repo> pull` (nhánh `main`).
 
 ```powershell
 git clone https://github.com/hoangducbao/Model-eval-on-comp-dataset.git
@@ -30,13 +32,15 @@ $env:Path = "$env:JAVA_HOME\bin;$env:ANDROID_HOME\platform-tools;$env:Path"
 if ($LASTEXITCODE -ne 0) { throw 'Build hoặc kiểm thử thất bại.' }
 
 New-Item -ItemType Directory -Path ..\outputs -Force | Out-Null
-Copy-Item .\app\build\outputs\apk\debug\app-debug.apk ..\outputs\larplarpsahur-debug.apk
-Get-FileHash ..\outputs\larplarpsahur-debug.apk -Algorithm SHA256
+Copy-Item .\app\build\outputs\apk\debug\app-debug.apk ..\outputs\larplarpsahur-1.2.0-debug.apk
+Get-FileHash ..\outputs\larplarpsahur-1.2.0-debug.apk -Algorithm SHA256
 ```
 
 APK gốc: `android/app/build/outputs/apk/debug/app-debug.apk`. Đây là APK debug để thử nghiệm cloud device, không phải bản ký phát hành lên Play Store. `android/local.properties` là cấu hình riêng của máy, không được commit; nếu file này tồn tại, đảm bảo `sdk.dir` trỏ đúng SDK.
 
 Có thể upload APK qua giao diện cài ứng dụng của QDC, hoặc dùng `adb install` sau khi mở tunnel ở bước tiếp theo.
+
+Mỗi máy ký APK debug bằng key riêng, nên SHA-256 khác nhau giữa các máy. Nếu điện thoại QDC còn bản do máy khác build, cài đè sẽ báo `INSTALL_FAILED_UPDATE_INCOMPATIBLE`: xuất kết quả trước, rồi `adb -H 127.0.0.1 -P 5038 -s $serial uninstall com.larplarpsahur` (gỡ app cũng xóa model đã tải, app sẽ tải lại khoảng 1,85 GB).
 
 ## 3. SSH tunnel QDC
 
@@ -174,9 +178,12 @@ Nguồn tải model:
 
 ## 5. Pull ZIP kết quả về máy tính
 
-Sau khi **Xuất kết quả** vào Download trên điện thoại, giữ SSH tunnel ở cửa sổ A; chạy ở PowerShell B:
+Sau khi **Xuất kết quả** vào Download trên điện thoại, giữ SSH tunnel ở cửa sổ A; chạy ở PowerShell B. **Phải gán `$serial` trước**: nếu biến rỗng, adb hiểu `shell` là serial và báo `ls requires an argument`; `adb devices` không kèm `-H/-P` chỉ liệt kê thiết bị cắm vào máy tính, không phải điện thoại cloud.
 
 ```powershell
+adb -H 127.0.0.1 -P 5038 devices -l
+$serial = 'SERIAL_CLOUD_DEVICE'   # chữ đầu tiên của dòng có trạng thái "device" ở trên
+
 adb -H 127.0.0.1 -P 5038 -s $serial shell ls -lah /sdcard/Download
 
 $resultsDirectory = Join-Path $env:USERPROFILE 'Downloads\qdc-results'
@@ -191,7 +198,7 @@ Get-FileHash -LiteralPath "$resultsDirectory\larplarpsahur-results.zip" -Algorit
 Expand-Archive -LiteralPath "$resultsDirectory\larplarpsahur-results.zip" -DestinationPath "$resultsDirectory\extracted" -Force
 ```
 
-Kết quả nằm ở `%USERPROFILE%\Downloads\qdc-results`. `adb pull` chỉ sao chép, không xóa bản trên điện thoại. Lấy file về trước khi kết thúc session QDC.
+Pull thành công in ra `1 file pulled`. Kết quả nằm ở `%USERPROFILE%\Downloads\qdc-results`. `adb pull` chỉ sao chép, không xóa bản trên điện thoại. Lấy file về trước khi kết thúc session QDC.
 
 Nếu chưa xuất ZIP, kết quả gốc nằm trong `/sdcard/Android/data/com.larplarpsahur/files/results/<run>/`. Một số thiết bị cho phép lấy trực tiếp qua ADB:
 
@@ -201,14 +208,23 @@ adb -H 127.0.0.1 -P 5038 -s $serial shell ls /sdcard/Android/data/com.larplarpsa
 adb -H 127.0.0.1 -P 5038 -s $serial pull '/sdcard/Android/data/com.larplarpsahur/files/results/RUN_DIRECTORY' "$resultsDirectory"
 ```
 
-ZIP gồm `results.json`, `results.csv`, transcripts/translations, `eval_asr.csv`, `eval_mt.csv`, `eval_mt_summary.csv` (bảng độ chính xác bản dịch theo track), `eval_summary.json`, `dataset_scan.json` và marker `DONE`, `CANCELLED` hoặc `FAILED`. `DONE` chỉ cho biết lượt chạy đã kết thúc; kiểm tra `error_samples` trong summary để biết mẫu lỗi. Audio/model không được đóng vào ZIP. Không có reference thì các metric tương ứng có thể là null/N/A.
+ZIP gồm `results.json`, `results.csv`, transcripts/translations, `eval_asr.csv`, `eval_mt.csv`, `eval_mt_summary.csv` (bảng độ chính xác bản dịch theo track), `eval_summary.json`, `dataset_scan.json` và marker `DONE`, `CANCELLED` hoặc `FAILED`. `DONE` chỉ cho biết lượt chạy đã kết thúc; kiểm tra `error_samples` trong summary để biết mẫu lỗi. Audio/model không được đóng vào ZIP. Không có reference thì các metric tương ứng có thể là null/N/A. Từ 1.2.0, `results.csv` có cột `mt_in`: câu thực sự đưa vào model dịch.
+
+Chấm lại trên máy tính (kiểm tra metric bằng sacreBLEU, CER không tính khác biệt định dạng như số/chữ, 她/他, tách ảnh hưởng của lỗi ASR lên bản dịch):
+
+```powershell
+pip install sacrebleu
+python tools\rescore_results.py "$resultsDirectory\extracted"
+```
 
 ## 6. Lỗi thường gặp
 
 - **Identity file not accessible:** sai đường dẫn/tên file PEM, hoặc file đã bị xóa. Kiểm tra `Test-Path -LiteralPath $keyPath`.
 - **UNPROTECTED PRIVATE KEY FILE:** chạy bước siết quyền ở trên; đảm bảo `-i` trỏ vào file PEM, không trỏ vào thư mục.
 - **Permission denied (publickey):** key không được máy chủ chấp nhận; kiểm tra key và lệnh tunnel thuộc session hiện tại, session chưa hết hạn. Welcome không phải xác nhận đăng nhập.
-- **bind ... Permission denied / Address already in use:** lỗi cổng Windows, không phải lỗi key. Kiểm tra `netstat -ano | findstr :5038`; nếu bị dùng/chặn, chọn cổng local khác trong QDC và đổi đồng bộ `-L` lẫn `adb -P`. Không dừng tiến trình lạ chỉ vì thấy PID.
+- **bind ... Permission denied / Address already in use:** lỗi cổng Windows, không phải lỗi key. Xem tiến trình đang giữ cổng:
+  `Get-NetTCPConnection -LocalPort 5038 -ErrorAction SilentlyContinue | Select-Object State, OwningProcess, @{n='Process';e={(Get-Process -Id $_.OwningProcess).ProcessName}}`.
+  Nếu là `adb` (thường do chạy lệnh `adb -P 5038` trước khi mở tunnel): `adb -P 5038 kill-server`. Nếu là `ssh`: đóng cửa sổ tunnel cũ. Chỉ dừng `adb`/`ssh`, không dừng tiến trình lạ. Nếu cổng trống mà vẫn lỗi, kiểm tra `netsh interface ipv4 show excludedportrange protocol=tcp`; khi 5038 nằm trong dải bị giữ, chọn cổng khác (ví dụ 15038) và đổi đồng bộ `-L` lẫn `adb -P`. Luôn mở tunnel **trước** khi chạy lệnh adb.
 - **adb devices trống hoặc nhầm điện thoại cá nhân:** luôn dùng đúng `-H 127.0.0.1 -P 5038` và serial cloud. Lệnh `adb devices` không có tham số có thể trỏ ADB local.
 - **pull: No such file:** liệt kê Download để lấy đúng tên ZIP; file vẫn nằm trên điện thoại cho đến khi `adb pull` thành công.
 - **Tạm dừng chưa phản hồi ngay:** đang chờ bước native inference kết thúc; nút không dừng tức thì giữa mọi token.
@@ -219,8 +235,9 @@ ZIP gồm `results.json`, `results.csv`, transcripts/translations, `eval_asr.csv
 - `android/app/src/main/java/com/onspeak47/`: mã sao chép từ OnSpeak47, **không sửa tay**; cập nhật bằng `tools/sync_onspeak47.sh <thư mục OnSpeak47>`.
 - `android/app/src/main/assets/reference_tables/`: ba bảng dịch Round 3 lấy từ Drive của BTC.
 - `CLAUDE.md`: hướng dẫn làm việc với repo, định nghĩa chỉ số và danh sách việc đã làm/còn mở.
-- `android_asr_mt_benchmark_plan.md`: kế hoạch/định dạng đánh giá (§23 mô tả bản 1.1.0).
+- `tools/rescore_results.py`: chấm lại `results.json` trên máy tính; `reports/`: báo cáo đánh giá từng lượt chạy.
+- `android_asr_mt_benchmark_plan.md`: kế hoạch/định dạng đánh giá (§23 bản 1.1.0, §24 bản 1.2.0).
 - `checkpoint.md`: trạng thái các tác vụ triển khai.
 - `outputs/`, `work/`, model, kết quả đánh giá và cấu hình SDK cục bộ không được đưa lên Git.
 
-Bản 1.1.0 đã vượt qua assembleDebug, lintDebug và 60 unit test trên JVM (13 của app, 47 cho mã OnSpeak47). **Bản 1.1.0 chưa được chạy trên thiết bị**: cần kiểm thử thực tế trên SM8850 để xác minh QNN, latency và chất lượng dịch. Các model/dataset và thư viện bên thứ ba tuân theo điều khoản của nguồn cung cấp tương ứng.
+Bản 1.2.0 đã vượt qua assembleDebug, lintDebug và 67 unit test trên JVM. Bản 1.1.0 đã chạy đủ 560/560 mẫu trên SM8850 (xem `reports/2026-11-12-quadata-v1.1.0.md`); **bản 1.2.0 chưa được chạy trên thiết bị**. Các model/dataset và thư viện bên thứ ba tuân theo điều khoản của nguồn cung cấp tương ứng.
